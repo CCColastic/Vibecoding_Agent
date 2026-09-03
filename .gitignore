@@ -6,3 +6,7 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+traces/
+/config.json
+/sessions.db
+/sessions.db-*

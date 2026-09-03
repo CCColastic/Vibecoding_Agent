@@ -35,7 +35,7 @@ class ConversationManager:
         return ActiveConversation(
             owner_id=self._owner_id,
             session_id=session.id,
-            history=[message.payload for message in stored_messages],
+            history=[{**message.payload, "_run_id": message.run_id} for message in stored_messages],
             runtime=self._runtime,
             store=self._store,
         )

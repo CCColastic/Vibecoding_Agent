@@ -77,7 +77,7 @@ class SQLiteSessionStore:
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT session_id, turn_id, sequence, payload_json, created_at
+                SELECT session_id, run_id, sequence, payload_json, created_at
                 FROM messages
                 WHERE session_id = ?
                 ORDER BY sequence
@@ -87,7 +87,7 @@ class SQLiteSessionStore:
         return [
             StoredMessage(
                 session_id=row["session_id"],
-                turn_id=row["turn_id"],
+                run_id=row["run_id"],
                 sequence=row["sequence"],
                 payload=json.loads(row["payload_json"]),
                 created_at=self._parse_time(row["created_at"]),
@@ -99,15 +99,19 @@ class SQLiteSessionStore:
         self,
         owner_id: str,
         session_id: str,
-        turn_id: str,
+        run_id: str,
         messages: Sequence[dict[str, Any]],
     ) -> Session:
         if not messages:
             return self.get_session(owner_id, session_id)
 
+        if not isinstance(run_id, str) or not run_id:
+            raise ValueError("run_id must be a non-empty string")
+        if any(message.get("_run_id", run_id) != run_id for message in messages):
+            raise ValueError("Message _run_id must match the appended Run")
         now = self._now()
         serialized_messages = [
-            json.dumps(message, ensure_ascii=False) for message in messages
+            self._serialize_payload(message) for message in messages
         ]
         with self._connect() as connection:
             row = connection.execute(
@@ -128,13 +132,13 @@ class SQLiteSessionStore:
             connection.executemany(
                 """
                 INSERT INTO messages
-                    (session_id, turn_id, sequence, payload_json, created_at)
+                    (session_id, run_id, sequence, payload_json, created_at)
                 VALUES (?, ?, ?, ?, ?)
                 """,
                 [
                     (
                         session_id,
-                        turn_id,
+                        run_id,
                         current_sequence + index,
                         payload,
                         self._serialize_time(now),
@@ -164,13 +168,13 @@ class SQLiteSessionStore:
         """Atomically replace this owner's Session history with a new snapshot."""
         now = self._now()
         rows_to_insert = []
-        turn_id = str(uuid4())
         for sequence, message in enumerate(messages, start=1):
-            if message.get("role") == "user" or message.get("_kind") == "context_summary":
-                turn_id = str(uuid4())
+            run_id = message.get("_run_id")
+            if not isinstance(run_id, str) or not run_id:
+                raise ValueError("Every replacement message must contain _run_id")
             rows_to_insert.append((
-                session_id, turn_id, sequence,
-                json.dumps(message, ensure_ascii=False), self._serialize_time(now),
+                session_id, run_id, sequence,
+                self._serialize_payload(message), self._serialize_time(now),
             ))
 
         # Prepare every payload before acquiring a write lock or deleting anything.
@@ -186,7 +190,7 @@ class SQLiteSessionStore:
             connection.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             connection.executemany(
                 """INSERT INTO messages
-                   (session_id, turn_id, sequence, payload_json, created_at)
+                   (session_id, run_id, sequence, payload_json, created_at)
                    VALUES (?, ?, ?, ?, ?)""",
                 rows_to_insert,
             )
@@ -200,7 +204,7 @@ class SQLiteSessionStore:
         )
 
     def _initialize(self) -> None:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS sessions (
@@ -217,7 +221,7 @@ class SQLiteSessionStore:
                 CREATE TABLE IF NOT EXISTS messages (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id TEXT NOT NULL,
-                    turn_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
                     sequence INTEGER NOT NULL,
                     payload_json TEXT NOT NULL,
                     created_at TEXT NOT NULL,
@@ -229,6 +233,18 @@ class SQLiteSessionStore:
                 ON messages(session_id, sequence);
                 """
             )
+            # Preserve legacy IDs; historical traces cannot be reconstructed.
+            connection.execute("BEGIN IMMEDIATE")
+            columns = {row["name"] for row in connection.execute("PRAGMA table_info(messages)")}
+            if "turn_id" in columns and "run_id" not in columns:
+                connection.execute("ALTER TABLE messages RENAME COLUMN turn_id TO run_id")
+
+    @staticmethod
+    def _serialize_payload(message: dict[str, Any]) -> str:
+        return json.dumps(
+            {key: value for key, value in message.items() if key != "_run_id"},
+            ensure_ascii=False,
+        )
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self._database_path)

@@ -19,6 +19,7 @@ OutputFunction = Callable[[str], None]
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="mini-agent")
     parser.add_argument("command", choices=["new", "sessions"])
+    parser.add_argument("--no-trace", action="store_true", help="Disable local Run trace files")
     return parser
 
 
@@ -47,6 +48,7 @@ async def conversation_loop(
             continue
         if was_new:
             output_fn(f"Session: {conversation.session_id}")
+        output_fn(f"Run: {result.run_id}")
         output_fn(f"Agent: {result.final_answer or result.error}")
 
 
@@ -59,7 +61,7 @@ async def run_cli(
 ) -> int:
     args = build_parser().parse_args(argv)
     try:
-        conversations = conversation_manager or build_conversation_manager()
+        conversations = conversation_manager or build_conversation_manager(trace_enabled=not args.no_trace)
     except (OSError, ValueError) as exc:
         output_fn(f"Error: {exc}")
         return 1

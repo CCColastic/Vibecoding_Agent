@@ -4,6 +4,12 @@ from copy import deepcopy
 from typing import Any
 
 
+def message_payloads(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Expected persisted/model content without the local Run identity."""
+    return [{key: value for key, value in message.items() if key != "_run_id"}
+            for message in messages]
+
+
 class FakeLLMClient:
     def __init__(self, responses: list[Any]) -> None:
         self._responses = iter(responses)

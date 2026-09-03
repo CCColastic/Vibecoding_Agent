@@ -42,7 +42,8 @@ Agent Runtime，不消耗正常 Agent 的 max_steps。
 
 不计算删除条数或摘要覆盖序号。以 owner_id + session_id 验证目标，事务中删除
 该 Session 的所有旧消息，再插入整个新快照。保留的轮次也重新插入，避免维护
-部分替换位置。此选择会丢失被总结原文和原始消息行元数据，但不会删除 Session。
+部分替换位置。此选择会丢失有效历史中的被总结原文和原始消息行编号/时间，
+但不会删除 Session；现有 Run ID 在替换中保留。独立 trace 如已启用，仍可能保留原文。
 
 ### 删除成功但插入中途失败
 
@@ -78,3 +79,53 @@ compaction_error 或 context_limit_exceeded，ActiveConversation 就不保存任
 Runtime 或 ContextCompactor 转成既有错误结果。重试不增加 Agent step、
 不重复追加消息、不重新执行工具；摘要内容不合格依然直接停止，而不是重新生成。
 测试模拟 SDK 请求和异步等待，不实际联网或等待重试间隔。
+
+## Run ID 与 Trace
+
+按用户要求，用稳定的 run_id 关联一次提问的输入、助手输出、工具执行和结果。
+不再在保存消息时生成新的身份，也不在压缩替换历史时重建保留消息的身份。
+
+### 身份放在哪里
+
+ActiveConversation 在调用 Runtime 前生成 UUID4；独立 Runtime 可自行生成。
+RunState、RunResult 和 trace 共用该 ID。内存消息携带 `_run_id`；SQLite 使用
+run_id 列保存，payload_json 不重复存该字段，恢复时再合并回内存。旧列名通过
+事务性重命名迁移，保留历史值；不能补造过去未记录的 trace。
+
+### 本地元数据不能进入模型输入
+
+正常请求与摘要请求均移除 `_run_id` 和 `_kind`。摘要使用当前生成 Run 的身份，
+近期保留消息使用原身份。执行身份不作为 system prompt 或用户消息正文的一部分。
+
+### Trace 的记录位置与失败语义
+
+Runtime 记录 user.input、assistant.output、tool.start、tool.end、run.end。
+结束事件在外层 finally 中统一生成，取消和未处理异常记录后继续传播。工具调用
+的解析、校验、执行仍归 ToolRegistry，Runtime 只在前后增加追踪，不改变工具职责。
+TraceRecorder 即时更新本地 JSON 数组文件，使用 indent=2，不等待 Run 成功；
+通过临时文件和原子替换避免写入中断破坏已有记录，日志失败警告但不影响执行结果。
+
+### Trace 与 Session 历史不是同一种记录
+
+Session 有效历史可压缩覆盖；trace 是独立的执行记录，不参与压缩或 memory 召回。
+run.end 不代表 SQLite 已提交。日志会包含原始输入输出，可能含敏感内容，因此
+提供 --no-trace 和应用 trace_enabled=False 开关，不上传、不自动清理、不提交 Git。
+
+### 验证方式
+
+使用临时数据库与假 LLM 验证列名迁移、重复初始化、压缩后身份保持、并发 Run
+事件隔离、错误/取消时唯一结束事件，以及日志写入失败不改变业务结果。所有测试
+不使用真实用户 Session 数据，也不消耗模型额度。
+
+### 数据生成位置统一到项目根目录
+
+按用户要求，默认路径改为从 app.py 的 `__file__` 向上定位项目根目录，不再使用
+Path.home() 或 MINI_AGENT_DATA_DIR。config.json、sessions.db 和 traces/ 都生成
+在项目根目录，换工作目录启动也不改变位置；显式 data_dir 参数保留用于测试和嵌入。
+新增 Git 忽略规则防止提交本地身份与数据库。用户目录的旧数据不自动移动或删除。
+
+### Trace 格式改为可直接阅读的 JSON
+
+每个 Run 生成 traces/<run_id>.json，事件按顺序保存在一个 JSON 数组中，缩进为
+2 个空格，中文不转义。不将多个带缩进对象直接拼接，以保证整个文件始终可由
+json.loads 解析。旧 .jsonl 文件保留，不自动转换或删除。

@@ -6,7 +6,7 @@ import pytest
 from mini_agent import AgentDefinition
 from mini_agent.session import ActiveConversation, Session
 from mini_agent.tools import CalculatorTool
-from tests.fakes import FakeLLMClient, tool_call
+from tests.fakes import FakeLLMClient, message_payloads, tool_call
 
 
 class RecordingStore:
@@ -28,7 +28,7 @@ class RecordingStore:
         self,
         owner_id: str,
         session_id: str,
-        turn_id: str,
+        run_id: str,
         messages: Sequence[dict[str, Any]],
     ) -> Session:
         if self.fail_append:
@@ -70,7 +70,7 @@ async def test_new_conversation_is_lazy_and_reuses_memory_history() -> None:
     assert second.steps_used == 1
     assert client.calls[1]["messages"] == [
         {"role": "system", "content": "Remember context"},
-        *first.new_messages,
+        *message_payloads(first.new_messages),
         {"role": "user", "content": "What is my name?"},
     ]
 

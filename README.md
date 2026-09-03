@@ -3,7 +3,7 @@
 `mini_agent` is a minimal asynchronous ReAct-style agent runtime backed by the
 DeepSeek Chat Completions API. It supports native tool calls, persistent
 sessions, consecutive follow-up questions, rolling context summaries, a hard
-`max_steps` limit, and three small example tools.
+`max_steps` limit, per-Run traces, and three small example tools.
 
 ## Requirements
 
@@ -47,6 +47,7 @@ Start a new conversation:
 
 The Session is created only after the first non-empty message. Continue typing
 to ask follow-up questions, or enter `/exit` to leave the Session.
+Each result prints `Run: <UUID>` so its trace can be found, including failed Runs.
 
 List and resume an existing Session:
 
@@ -54,9 +55,21 @@ List and resume an existing Session:
 .venv\Scripts\mini-agent sessions
 ```
 
-The CLI creates one local Owner ID in `~/.mini_agent/config.json` and stores
-Sessions in `~/.mini_agent/sessions.db`. Set `MINI_AGENT_DATA_DIR` to use a
-different directory.
+The CLI stores all generated data in the project root: `config.json` for the
+local Owner ID, `sessions.db` for Sessions, and `traces/` for Run traces. The root
+is resolved from `src/mini_agent/app.py` using `Path(__file__).resolve().parents[2]`,
+not the user directory or the directory from which the CLI was launched.
+`MINI_AGENT_DATA_DIR` no longer overrides the CLI location. Embedding applications
+and tests may still explicitly pass `data_dir` to `build_conversation_manager()`.
+These local data files are Git-ignored. Existing data previously stored under
+the user directory is not automatically moved or deleted.
+
+Tracing is on by default in the CLI. Disable it for either command with
+`--no-trace`, for example:
+
+```powershell
+.venv\Scripts\mini-agent new --no-trace
+```
 
 The composition root returns an Owner-scoped `ConversationManager`. Callers can
 create, list, and resume conversations without receiving the Owner ID, Runtime,
@@ -124,6 +137,20 @@ answers and tool results without reading SQLite again. Its public interface cont
 the system prompt. `new_messages` explicitly accumulates only this Run's user,
 assistant, and tool messages; it never contains a generated summary.
 
+Every execution has a stable UUID4 `run_id`, shared by `RunState`, `RunResult`,
+its trace, and its newly stored messages. `ActiveConversation` generates it before
+calling the Runtime; a standalone `runtime.run()` generates one if omitted.
+Optional keyword arguments `run_id` and `session_id` support caller correlation.
+A caller-supplied Run ID must be a UUID4 and should be fresh for each execution.
+Resubmitting a failed question gets a new ID; internal LLM retries do not.
+
+Internal messages carry `_run_id` to preserve their execution identity through
+compaction. Both normal and summary requests remove `_run_id` and `_kind` before
+sending messages to the LLM. SQLite stores the identity in `messages.run_id`, not
+inside `payload_json`; Session resume restores `_run_id` from that column. A new
+summary belongs to the Run that generated it, while retained messages keep their
+original Run IDs. The Runtime never stores a shared current Run or Session ID.
+
 ## Context compaction and memory recall
 
 Before every normal LLM call (including calls after tool execution), the Runtime
@@ -146,7 +173,8 @@ The effective history has this shape:
 
 ```python
 [
-    {"role": "assistant", "content": "历史摘要：...", "_kind": "context_summary"},
+    {"role": "assistant", "content": "历史摘要：...",
+     "_kind": "context_summary", "_run_id": "summary-producing-run-uuid"},
     # Recent complete user / assistant / tool messages, followed by this Run.
 ]
 ```
@@ -204,18 +232,74 @@ Session timestamp, and commits. Any database failure rolls back the deletion
 and inserts. It never deletes the Session itself or affects another Session.
 The caller must not append `new_messages` after replacement.
 
-The existing tables are reused without migration. Messages are renumbered from
-1 and receive new turn-group IDs and snapshot timestamps; tool-call IDs inside
-payloads are preserved. Session identity, title, and creation time are unchanged.
+The existing tables are reused. Store initialization migrates the legacy
+`turn_id` column to `run_id` transactionally, preserving existing values and
+messages; repeated initialization does not repeat the migration. Old identities
+remain historical labels and cannot reconstruct traces that were never recorded.
+Messages are renumbered from 1 and receive snapshot timestamps, but their Run IDs
+and tool-call IDs are preserved. Replacement requires `_run_id` on every message
+and checks it before deleting anything. Session identity, title, and creation time are unchanged.
 These message records are a current context snapshot, not an original audit
-trail. Summarized source text is no longer available through the application:
+trail. Summarized source text is no longer available from the Session history:
 exact quotations, recovery of omitted facts, and original message timestamps
 cannot be guaranteed. Concurrent writers to the same Session remain unsupported.
 
 Compaction logs use Python logging (`mini_agent.context.compactor`) and contain
 event names, estimated sizes, retained-turn counts, and safe error types, not
 full messages. Enable INFO logging in an embedding application to see successful
-compactions. The CLI retains its existing interaction and error display.
+compactions. Full execution traces are separate from these compaction logs.
+
+## Run traces
+
+The application creates one `TraceRecorder` and injects it into the reusable
+Runtime. Events are saved immediately as a UTF-8 JSON array, one file per Run:
+`<data_dir>/traces/<run_id>.json`, formatted with `indent=2` and readable Unicode.
+Each event updates the complete document through a temporary file and atomic
+replacement, preserving the previous trace if replacement fails. Existing
+`.jsonl` files are not converted or deleted. No trace directory is created until
+an event is written. A standalone Runtime does not trace unless explicitly configured:
+
+```python
+from pathlib import Path
+from mini_agent import TraceRecorder
+
+runtime = definition.create_runtime(trace_recorder=TraceRecorder(Path("traces")))
+result = await runtime.run("Calculate 6 times 7")
+print(result.run_id)
+```
+
+Applications can also pass `trace_enabled=False` to
+`build_conversation_manager()`. Prebuilt managers retain their own configuration.
+
+Each event contains `timestamp` (UTC ISO 8601), `run_id`, `session_id` (nullable),
+`sequence` (starting at 1 per Run), `step`, `event`, and `data`. Trace sequence is
+not the SQLite message sequence. Durations use a monotonic clock in milliseconds.
+
+- `user.input`: the current input, recorded before compaction checks.
+- `assistant.output`: each normal LLM response's content and tool calls, not just
+  the final answer. Internal reasoning is excluded.
+- `tool.start`: call ID, tool name, and raw arguments before validation/execution.
+- `tool.end`: call ID, name, parsed arguments (when available), success/error
+  result, and duration. Validation failures, unknown tools, and cancellation are
+  recorded too.
+- `run.end`: status, step count, error, and total duration. Normal returns and
+  handled errors produce one end event; unexpected exceptions and cancellation
+  are recorded as `unhandled_error`/`cancelled` and then propagated. An abrupt
+  process termination can still leave an incomplete trace.
+
+`run.end` means the Runtime ended, **not** that SQLite persistence succeeded.
+Trace writing does not roll back with Session history. Logs never trigger tool
+retries: write/serialization errors produce a safe warning without changing the
+Agent result. Non-serializable tool values are represented by their type rather
+than arbitrary object representations.
+
+**Privacy and retention:** traces contain original user text, assistant outputs,
+tool arguments, and results, which may contain sensitive data. Infrastructure
+credentials, HTTP headers, full request history, and model internal reasoning
+are not intentionally logged. Trace files are local and Git-ignored, are not
+sent back to the model, and are not deleted by context compaction. There is no
+automatic cleanup or archive recall; use `--no-trace` to avoid recording future
+Runs. Disabling tracing does not remove existing files.
 
 See [AI prompts and problem-solving notes](docs/AI_PROMPTS.md) for the summary
 prompt contract and implementation decisions.

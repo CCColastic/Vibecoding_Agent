@@ -22,6 +22,9 @@ class ToolExecution:
 @dataclass(slots=True)
 class RunState:
     messages: list[dict[str, Any]]
+    run_id: str
+    session_id: str | None = None
+    trace_sequence: int = 0
     new_messages: list[dict[str, Any]] = field(default_factory=list)
     step: int = 0
     tool_executions: list[ToolExecution] = field(default_factory=list)
@@ -46,5 +49,6 @@ class RunResult:
     new_messages: list[dict[str, Any]]
     steps_used: int
     tool_executions: list[ToolExecution]
+    run_id: str
     error: str | None = None
     compacted: bool = False

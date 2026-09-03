@@ -44,6 +44,8 @@ class ActiveConversation:
         result = await self._runtime.run(
             user_input=user_input,
             context_messages=self._history,
+            run_id=str(uuid4()),
+            session_id=self._session_id,
         )
         if result.status in {"compaction_error", "context_limit_exceeded"}:
             return result
@@ -57,7 +59,7 @@ class ActiveConversation:
             self._store.append_messages(
                 owner_id=self._owner_id,
                 session_id=self._session_id,
-                turn_id=str(uuid4()),
+                run_id=result.run_id,
                 messages=result.new_messages,
             )
         self._history = deepcopy(result.messages)

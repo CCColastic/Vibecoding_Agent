@@ -40,6 +40,7 @@ def setup_conversation(tmp_path, responses, *, max_steps=8):
         {"role": "assistant", "content": "Recent answer"},
     ]
     SQLiteSessionStore.append_messages(store, "owner-a", session.id, "old", history)
+    history = [{**message, "_run_id": "old"} for message in history]
     client = FakeLLMClient(responses)
     runtime = AgentDefinition("Remember", []).create_runtime(
         llm_client=client, max_steps=max_steps,
@@ -53,7 +54,8 @@ def setup_conversation(tmp_path, responses, *, max_steps=8):
 
 
 def saved(store, session):
-    return [m.payload for m in SQLiteSessionStore.load_messages(store, "owner-a", session.id)]
+    return [{**m.payload, "_run_id": m.run_id}
+            for m in SQLiteSessionStore.load_messages(store, "owner-a", session.id)]
 
 
 async def test_compacted_session_replaces_once_then_appends_and_resumes_once(tmp_path):
@@ -143,7 +145,9 @@ async def test_successful_compaction_is_saved_after_ordinary_run_failure(tmp_pat
     assert result.compacted
     assert store.replacements == 1 and store.appends == 0
     assert saved(store, session) == result.messages
-    assert result.new_messages[0] == {"role": "user", "content": "Question"}
+    assert result.new_messages[0] == {
+        "role": "user", "content": "Question", "_run_id": result.run_id,
+    }
 
 
 async def test_later_budget_failure_discards_even_an_earlier_successful_compaction(tmp_path):

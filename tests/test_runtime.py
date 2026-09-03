@@ -2,7 +2,7 @@ import json
 
 from mini_agent import AgentDefinition
 from mini_agent.tools import CalculatorTool, SearchTool, WeatherTool
-from tests.fakes import FailingLLMClient, FakeLLMClient, tool_call
+from tests.fakes import FailingLLMClient, FakeLLMClient, message_payloads, tool_call
 
 
 def make_definition() -> AgentDefinition:
@@ -22,7 +22,7 @@ async def test_runtime_returns_direct_answer() -> None:
     assert result.final_answer == "Hello"
     assert result.steps_used == 1
     assert result.tool_executions == []
-    assert result.new_messages == [
+    assert message_payloads(result.new_messages) == [
         {"role": "user", "content": "Hi"},
         {"role": "assistant", "content": "Hello"},
     ]
@@ -47,7 +47,7 @@ async def test_runtime_uses_context_without_mutating_it() -> None:
         *history,
         {"role": "user", "content": "What is my name?"},
     ]
-    assert result.new_messages == [
+    assert message_payloads(result.new_messages) == [
         {"role": "user", "content": "What is my name?"},
         {"role": "assistant", "content": "Your name is Ada"},
     ]

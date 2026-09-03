@@ -1,3 +1,6 @@
+from pathlib import Path
+
+import mini_agent.app as app
 from mini_agent.app import build_conversation_manager
 from tests.fakes import FakeLLMClient
 
@@ -26,3 +29,23 @@ async def test_builder_returns_working_owner_scoped_manager(tmp_path) -> None:
         {"role": "user", "content": "First question"},
         {"role": "assistant", "content": "First answer"},
     ]
+
+
+def test_default_data_dir_is_project_root_not_working_or_user_directory(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MINI_AGENT_DATA_DIR", str(tmp_path / "old-override"))
+    assert app._default_data_dir() == Path(__file__).resolve().parents[1]
+
+
+async def test_default_builder_keeps_all_generated_data_in_project(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    monkeypatch.setattr(app, "__file__", str(project / "src" / "mini_agent" / "app.py"))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MINI_AGENT_DATA_DIR", str(tmp_path / "old-override"))
+    manager = build_conversation_manager(llm_client=FakeLLMClient([{"content": "Answer"}]))
+    result = await manager.new_conversation().send_message("Hello")
+    assert (project / "config.json").is_file()
+    assert (project / "sessions.db").is_file()
+    assert (project / "traces" / f"{result.run_id}.json").is_file()
+    assert not (tmp_path / "config.json").exists()
+    assert not (tmp_path / "old-override").exists()

@@ -24,7 +24,7 @@ class SessionStore(Protocol):
         self,
         owner_id: str,
         session_id: str,
-        turn_id: str,
+        run_id: str,
         messages: Sequence[dict[str, Any]],
     ) -> Session: ...
 

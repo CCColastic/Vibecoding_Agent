@@ -20,7 +20,7 @@ def test_store_creates_appends_and_loads_session(tmp_path) -> None:
 
     assert updated.updated_at >= session.updated_at
     assert [message.sequence for message in stored] == [1, 2]
-    assert [message.turn_id for message in stored] == ["turn-1", "turn-1"]
+    assert [message.run_id for message in stored] == ["turn-1", "turn-1"]
     assert [message.payload for message in stored] == messages
 
     store.append_messages(
@@ -89,8 +89,8 @@ def test_append_is_atomic_when_message_is_not_serializable(tmp_path) -> None:
 
 
 def test_replace_rebuilds_only_target_snapshot_and_append_continues(tmp_path):
-    from uuid import UUID
-    from tests.fakes import tool_call
+    from uuid import UUID, uuid4
+    from tests.fakes import message_payloads, tool_call
 
     store = SQLiteSessionStore(tmp_path / "sessions.db")
     target = store.create_session("owner-a", "Target")
@@ -109,20 +109,24 @@ def test_replace_rebuilds_only_target_snapshot_and_append_continues(tmp_path):
         {"role": "user", "content": "Next"},
         {"role": "assistant", "content": "Answer"},
     ]
+    summary_id, recent_id, current_id = (str(uuid4()) for _ in range(3))
+    run_ids = [summary_id, *([recent_id] * 4), current_id, current_id]
+    snapshot = [{**message, "_run_id": run_id} for message, run_id in zip(snapshot, run_ids)]
     updated = store.replace_history("owner-a", target.id, snapshot)
     saved = store.load_messages("owner-a", target.id)
-    assert [m.payload for m in saved] == snapshot
+    assert [m.payload for m in saved] == message_payloads(snapshot)
+    assert [m.run_id for m in saved] == run_ids
     assert [m.sequence for m in saved] == list(range(1, 8))
-    assert len({m.turn_id for m in saved[1:5]}) == 1
-    assert saved[0].turn_id != saved[1].turn_id != saved[5].turn_id
-    assert saved[5].turn_id == saved[6].turn_id
-    assert all(UUID(m.turn_id).version == 4 for m in saved)
+    assert len({m.run_id for m in saved[1:5]}) == 1
+    assert saved[0].run_id != saved[1].run_id != saved[5].run_id
+    assert saved[5].run_id == saved[6].run_id
+    assert all(UUID(m.run_id).version == 4 for m in saved)
     assert all(m.created_at == updated.updated_at for m in saved)
     assert updated.created_at == target.created_at
     assert (updated.id, updated.title, updated.owner_id) == (target.id, target.title, target.owner_id)
     assert store.list_sessions("owner-a")[0].id == target.id
     for session in (other, foreign):
-        assert store.load_messages(session.owner_id, session.id)[0].turn_id == "old-turn"
+        assert store.load_messages(session.owner_id, session.id)[0].run_id == "old-turn"
     store.append_messages("owner-a", target.id, "next-turn", [{"role": "user", "content": "Again"}])
     assert store.load_messages("owner-a", target.id)[-1].sequence == 8
 
@@ -144,8 +148,8 @@ def test_replace_serializes_every_payload_before_deleting(tmp_path):
     original = store.load_messages("owner-a", session.id)
     with pytest.raises(TypeError):
         store.replace_history("owner-a", session.id, [
-            {"role": "assistant", "content": "Summary", "_kind": "context_summary"},
-            {"role": "user", "content": object()},
+            {"role": "assistant", "content": "Summary", "_kind": "context_summary", "_run_id": "summary"},
+            {"role": "user", "content": object(), "_run_id": "recent"},
         ])
     assert store.load_messages("owner-a", session.id) == original
 
@@ -163,8 +167,8 @@ def test_replace_rolls_back_delete_and_partial_inserts_on_database_error(tmp_pat
             WHEN NEW.sequence = 2 BEGIN SELECT RAISE(ABORT, 'test insert failure'); END""")
     with pytest.raises(sqlite3.IntegrityError, match="test insert failure"):
         store.replace_history("owner-a", session.id, [
-            {"role": "assistant", "content": "Summary", "_kind": "context_summary"},
-            {"role": "user", "content": "Recent"},
+            {"role": "assistant", "content": "Summary", "_kind": "context_summary", "_run_id": "summary"},
+            {"role": "user", "content": "Recent", "_run_id": "recent"},
         ])
     assert store.load_messages("owner-a", session.id) == original
     assert store.get_session("owner-a", session.id) == original_session

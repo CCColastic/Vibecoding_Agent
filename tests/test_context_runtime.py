@@ -6,7 +6,7 @@ import pytest
 from mini_agent import AgentDefinition, ContextPolicy, ToolResult
 from mini_agent.context.compactor import estimate_tokens, request_messages
 from mini_agent.tools import SearchTool
-from tests.fakes import FakeLLMClient, tool_call
+from tests.fakes import FakeLLMClient, message_payloads, tool_call
 
 
 def long_history():
@@ -42,7 +42,7 @@ async def test_runtime_compaction_separates_effective_history_and_new_messages()
     assert result.steps_used == 1
     assert len(client.calls) == 2
     assert result.compacted
-    assert result.new_messages == [
+    assert message_payloads(result.new_messages) == [
         {"role": "user", "content": "Question"},
         {"role": "assistant", "content": "Final answer"},
     ]
@@ -98,15 +98,15 @@ async def test_tool_growth_triggers_check_before_next_llm_call(monkeypatch, fail
     assert result.steps_used == (1 if fail_summary else 2)
     assert result.status == ("compaction_error" if fail_summary else "completed")
     assert len(result.tool_executions) == 1
-    assert result.new_messages[0] == current
-    assert result.new_messages[1] == call
+    assert result.new_messages[0] == {**current, "_run_id": result.run_id}
+    assert result.new_messages[1] == {**call, "_run_id": result.run_id}
     assert result.new_messages[2]["tool_call_id"] == "call-1"
     assert client.calls[1]["tools"] == []
     summary_input = json.loads(client.calls[1]["messages"][1]["content"])
     assert summary_input == source[:-2]
     if not fail_summary:
         assert result.compacted
-        assert client.calls[2]["messages"][-3:] == result.new_messages[:3]
+        assert client.calls[2]["messages"][-3:] == message_payloads(result.new_messages[:3])
         assert result.new_messages[-1]["content"] == "Done"
         assert len(result.new_messages) == 4
 

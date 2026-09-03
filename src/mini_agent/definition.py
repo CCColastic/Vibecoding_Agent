@@ -7,6 +7,7 @@ from mini_agent.context import ContextCompactor, ContextPolicy
 from mini_agent.llm import DeepSeekClient, LLMClient
 from mini_agent.runtime import AgentRuntime
 from mini_agent.tools import Tool, ToolRegistry
+from mini_agent.trace import TraceRecorder
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,6 +33,7 @@ class AgentDefinition:
         max_steps: int = 8,
         llm_client: LLMClient | None = None,
         context_policy: ContextPolicy | None = None,
+        trace_recorder: TraceRecorder | None = None,
     ) -> AgentRuntime:
         if max_steps < 1:
             raise ValueError("max_steps must be at least 1")
@@ -42,6 +44,7 @@ class AgentDefinition:
             registry=registry,
             llm_client=client,
             max_steps=max_steps,
+            trace_recorder=trace_recorder,
             compactor=ContextCompactor(
                 llm_client=client,
                 policy=context_policy if context_policy is not None else ContextPolicy(),

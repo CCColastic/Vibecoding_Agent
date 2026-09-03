@@ -22,7 +22,7 @@ class Session:
 @dataclass(frozen=True, slots=True)
 class StoredMessage:
     session_id: str
-    turn_id: str
+    run_id: str
     sequence: int
     payload: dict[str, Any]
     created_at: datetime

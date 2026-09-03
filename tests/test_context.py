@@ -97,7 +97,7 @@ async def test_rolling_summary_merges_previous_summary_exactly_once():
     result = await prepare(client, source)
     assert sum(m.get("_kind") == "context_summary" for m in result.messages) == 1
     supplied = json.loads(client.calls[0]["messages"][1]["content"])
-    assert supplied == [previous, *source[1:-8]]
+    assert supplied == [{"role": "assistant", "content": "Previous fact"}, *source[1:-8]]
     assert "Previous fact" not in result.messages[0]["content"]
 
 

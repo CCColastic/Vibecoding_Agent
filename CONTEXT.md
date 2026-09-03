@@ -25,6 +25,16 @@ _Avoid_: Step, Run
 The temporary execution of the Agent Runtime for one Turn.
 _Avoid_: Session, Conversation
 
+**Run ID**:
+The stable identity of one execution attempt, shared by its messages and Trace.
+Submitting another question or retrying a failed Run creates a new identity.
+_Avoid_: Turn ID, Session ID, Tool call ID
+
+**Trace**:
+The ordered record of one Run's input, assistant outputs, tool activity, and
+outcome. It is independent of the Session's Effective History.
+_Avoid_: Chat history, Summary
+
 **Effective History**:
 The information retained for continuing a Session: an optional Rolling Summary
 and the Turns that have not been summarized. It is not a complete transcript.
