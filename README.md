@@ -1,198 +1,250 @@
 # mini_agent
 
-`mini_agent` is a minimal asynchronous ReAct-style agent runtime backed by the
-DeepSeek Chat Completions API. It supports native tool calls, persistent
-sessions, consecutive follow-up questions, rolling context summaries, a hard
-`max_steps` limit, per-Run traces, and three small example tools.
+从零实现的最小可用 ReAct 风格 Agent，使用真实 DeepSeek Chat Completions 接口，
+支持工具调用、连续追问、独立 Session、滚动摘要和执行 trace。
 
-## Requirements
+核心 Agent Runtime 自行实现，不依赖 LangGraph、OpenHands、OpenClaw 等 Agent 框架。
+`openai` 仅作为兼容接口的请求 SDK，工具参数 Schema 和校验使用 Pydantic，
+持久化使用标准库 SQLite。
 
-- Python 3.12+
-- A DeepSeek API key for the real example
+## 1. 运行方式
 
-## Install
+### 安装
+
+需要 Python 3.12+，以及可用的 DeepSeek API Key。以下命令在项目根目录执行，
+以 Windows PowerShell 为例：
 
 ```powershell
 python -m venv .venv
-.venv\Scripts\python -m pip install -e ".[dev]"
+.venv\Scripts\python.exe -m pip install -e ".[dev]"
 ```
 
-Set the model configuration in your shell or `.env` file:
+不需要激活虚拟环境，后续直接使用其中的可执行文件。
+
+### 配置模型
+
+首次运行时，从模板创建 `.env`；已有文件不会被覆盖：
 
 ```powershell
-$env:API_KEY="your-api-key"
-$env:BASE_URL="https://api.deepseek.com"
-$env:MODEL="deepseek-chat"
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 ```
 
-The model adapter calls `load_dotenv()` and reads `API_KEY`, `BASE_URL`, and
-`MODEL`. Shell environment values take precedence over values in `.env`.
+编辑项目根目录的 `.env`：
 
-Each `DeepSeekClient.llm_call()` makes at most three attempts (the initial request
-plus two retries), with asynchronous waits of 1 and 2 seconds. Only connection
-errors, SDK timeouts, HTTP 429, and HTTP 5xx are retried. Other HTTP errors,
-invalid successful responses, and cancellation are not retried. SDK built-in
-retries are disabled (`max_retries=0`) to avoid multiplying attempts. After the
-last failure, the original exception is passed to the existing Runtime or
-compaction error handler. Both normal and summary requests share this behavior;
-retries do not consume extra Agent steps, append messages, or re-execute tools.
+```dotenv
+API_KEY=your-api-key
+BASE_URL=https://api.deepseek.com
+MODEL=your-model-name
+```
 
-## Run the CLI
+必须将 `API_KEY` 和 `MODEL` 替换成实际值；模型需支持 Chat Completions 工具调用。
+参数名与 [.env.example](.env.example) 一致，不使用 `DEEPSEEK_API_KEY` 等其他名称。
+模型名称和连接设置由 `DeepSeekClient` 读取，不在 `AgentDefinition` 中配置。
 
-Start a new conversation:
+客户端通过 `load_dotenv()` 加载配置，已有系统环境变量优先于 `.env`。
+`.env` 已被 Git 忽略，不要提交真实密钥。
+
+### 新建对话与连续追问
 
 ```powershell
-.venv\Scripts\mini-agent new
+.venv\Scripts\mini-agent.exe new
 ```
 
-The Session is created only after the first non-empty message. Continue typing
-to ask follow-up questions, or enter `/exit` to leave the Session.
-Each result prints `Run: <UUID>` so its trace can be found, including failed Runs.
+进入后可连续输入，例如：
 
-List and resume an existing Session:
+```text
+You: 我叫小明，请记住。
+You: 我叫什么？
+You: 用计算器计算 12 乘以 7。
+You: 再把刚才的结果加上 10。
+You: 查询上海天气，并说明数据是否真实。
+You: /exit
+```
+
+首次非空消息到来时才创建 Session。空白输入被忽略；`/exit` 或输入时按
+`Ctrl+C` 可离开，不删除已保存的历史。中断尚未完成的 Run 不保证保存其消息。
+
+CLI 显示 Session ID，并为每个返回结果显示 `Run: <UUID>`，用于定位执行记录。
+
+### 恢复历史 Session
 
 ```powershell
-.venv\Scripts\mini-agent sessions
+.venv\Scripts\mini-agent.exe sessions
 ```
 
-The CLI stores all generated data in the project root: `config.json` for the
-local Owner ID, `sessions.db` for Sessions, and `traces/` for Run traces. The root
-is resolved from `src/mini_agent/app.py` using `Path(__file__).resolve().parents[2]`,
-not the user directory or the directory from which the CLI was launched.
-`MINI_AGENT_DATA_DIR` no longer overrides the CLI location. Embedding applications
-and tests may still explicitly pass `data_dir` to `build_conversation_manager()`.
-These local data files are Git-ignored. Existing data previously stored under
-the user directory is not automatically moved or deleted.
+程序列出当前 Owner 的 Session，按最近更新时间排序。输入编号并回车，随后继续对话。
+两个窗口分别使用 `new`，会获得同一 Owner 下的两个独立 Session；恢复时选择对应编号即可。
+目前不支持两个窗口同时写入同一个 Session。
 
-Tracing is on by default in the CLI. Disable it for either command with
-`--no-trace`, for example:
+### 关闭 trace / 运行单轮示例
 
 ```powershell
-.venv\Scripts\mini-agent new --no-trace
+.venv\Scripts\mini-agent.exe new --no-trace
+.venv\Scripts\mini-agent.exe sessions --no-trace
+.venv\Scripts\python.exe examples\run_agent.py
 ```
 
-The composition root returns an Owner-scoped `ConversationManager`. Callers can
-create, list, and resume conversations without receiving the Owner ID, Runtime,
-LLM client, or SQLite store:
+单轮示例直接创建 Runtime，不创建持久化 Session，默认也不记录 trace。
 
-```python
-from mini_agent.app import build_conversation_manager
+### 本地数据位置
 
-conversations = build_conversation_manager()
-conversation = conversations.new_conversation()
-result = await conversation.send_message("Hello")
-```
+按上述 editable 安装方式运行时，默认数据目录是项目根目录，由应用源码位置确定，
+而不是启动命令时的工作目录：
 
-## Run the single-turn example
+- `config.json`：首次生成并复用的本地 `owner_id`。
+- `sessions.db`：Session 信息与有效历史。
+- `traces/<run_id>.json`：默认启用的逐 Run 执行记录。
 
-```powershell
-.venv\Scripts\python examples\run_agent.py
-```
+这些文件均被 Git 忽略。用户不需要手动提供 Owner ID 或 Session ID。
+Owner 只是本地身份，不是登录或用户认证系统。
 
-```python
-import asyncio
+当前 CLI 不读取 `MINI_AGENT_DATA_DIR`；旧版用户目录下的数据也不会自动迁移。
+代码调用时可通过 `build_conversation_manager(data_dir=Path(...))` 指定其他位置。
 
-from mini_agent import AgentDefinition
-from mini_agent.tools import CalculatorTool, SearchTool, WeatherTool
+## 2. 系统设计
 
+### 模块职责
 
-async def main() -> None:
-    definition = AgentDefinition(
-        system_prompt="Use tools when useful, then answer clearly.",
-        tools=[CalculatorTool(), SearchTool(), WeatherTool()],
-    )
-    result = await definition.create_runtime(max_steps=8).run(
-        "What is 12 multiplied by 7?"
-    )
-    print(result.final_answer or result.error)
+- `app.py`：应用组装入口，创建 Owner、Store、Definition、Client、Runtime 和 trace recorder。
+- `AgentDefinition`：只保存 `system_prompt` 和工具列表；创建 Runtime 时注册工具、注入依赖。
+- `AgentRuntime`：执行 LLM/Tool Loop，管理单次 Run，不保存跨问题的 Session 状态。
+- `DeepSeekClient`：发送真实模型请求，统一处理有限次数的请求重试。
+- `ToolRegistry`：注册工具、生成 Schema、解析参数、校验并执行工具。
+- `ConversationManager`：限定在一个 Owner 下，负责新建、列出和恢复 Session。
+- `ActiveConversation`：持有当前 Session 的内存历史，协调运行与保存。
+- `SQLiteSessionStore`：校验 Session 所有权，加载、追加或替换有效历史。
+- `ContextCompactor`：估算上下文大小，生成滚动摘要，不持有 Session 状态。
+- `TraceRecorder`：按 Run 写入执行事件，不参与 memory 召回。
 
+应用内复用同一个 Client、Runtime、ToolRegistry、Compactor 和 Store。
+每次提问只创建新的 `RunState`，`step` 从 0 开始，默认最多进行 8 次正常 Agent LLM 调用。
+Session 状态只属于各自的 ActiveConversation，因此复用 Runtime 不会混合不同会话。
 
-asyncio.run(main())
-```
+### Agent Loop
 
-## Design
+1. 接收用户输入，复制 Session 有效历史，创建 RunState 和新的 UUID4 `run_id`。
+2. 追加当前 user 消息，在调用 LLM 前检查是否需要压缩。
+3. 将 system prompt、有效历史、当前 Run 消息与 tools Schema 发给模型。
+4. 若返回 `tool_calls`，按顺序解析 JSON 参数、通过 Pydantic 校验、执行工具。
+5. 将 assistant 的工具调用及对应 tool 结果追加到上下文，再进入下一步 LLM 调用。
+6. 若没有工具调用且 `content` 非空，作为最终答案返回；达到步数上限或发生错误则停止。
 
-`AgentDefinition` is immutable configuration containing only the system prompt
-and tools. Model name and DeepSeek connection settings belong to the model
-adapter and come from the environment. The application creates one DeepSeek
-client, one tool registry, and one `AgentRuntime`, then reuses them for the
-whole CLI process. The Runtime never owns Session state.
+本项目使用原生工具调用字段决策，不要求模型生成可解析的 `Thought/Action` 文本。
+当前请求关闭 thinking；内部思考不保存、不召回，也不写入 trace。
+同一次响应中即使既有文本又有工具调用，也先执行工具，再继续 Loop。
 
-For every `run(user_input, context_messages)`, the Runtime creates a temporary
-`RunState`; `steps_used` therefore restarts for every user turn. A response
-containing tool calls is validated, executed in order, appended to the message
-list, and sent back to the model. The resulting `new_messages` contain only the
-current user message and the assistant/tool messages produced for that turn.
+### 三个工具
 
-`ActiveConversation` owns the in-memory history for one Session. A new
-conversation starts with an empty history and creates its Session on the first
-message. A resumed conversation loads SQLite effective history once. Without
-compaction, `new_messages` are appended to SQLite; after compaction, the entire
-effective history is replaced in one transaction. The in-memory history is
-updated only after a successful commit, so later questions can refer to prior
-answers and tool results without reading SQLite again. Its public interface contains only
-`session_id` and `send_message()`; persistence and Runtime details stay private.
+- `calculator`：必填 `operation`、`a`、`b`，支持
+  `add / subtract / multiply / divide`；除零返回错误，不使用 `eval`。
+- `search`：必填非空 `query`，固定返回 `"mock result"`。
+- `weather`：必填非空 `location`，返回该地区的模拟天气：
+  `sunny`、`25℃`、`source="mock"`，不是实时天气。
 
-`RunState.messages` and `RunResult.messages` contain effective history without
-the system prompt. `new_messages` explicitly accumulates only this Run's user,
-assistant, and tool messages; it never contains a generated summary.
+每个工具提供名称、描述、Pydantic 参数模型和异步 `execute()`。
+Registry 将参数模型转换成 JSON Schema 交给 LLM；工具选择由模型决定，
+不是根据用户输入关键词硬编码路由。参数采用严格校验，拒绝多余字段。
+未知工具、非法参数和工具执行错误会转成工具结果，让 Agent 有机会继续回答。
 
-Every execution has a stable UUID4 `run_id`, shared by `RunState`, `RunResult`,
-its trace, and its newly stored messages. `ActiveConversation` generates it before
-calling the Runtime; a standalone `runtime.run()` generates one if omitted.
-Optional keyword arguments `run_id` and `session_id` support caller correlation.
-A caller-supplied Run ID must be a UUID4 and should be fresh for each execution.
-Resubmitting a failed question gets a new ID; internal LLM retries do not.
+### Run 数据
 
-Internal messages carry `_run_id` to preserve their execution identity through
-compaction. Both normal and summary requests remove `_run_id` and `_kind` before
-sending messages to the LLM. SQLite stores the identity in `messages.run_id`, not
-inside `payload_json`; Session resume restores `_run_id` from that column. A new
-summary belongs to the Run that generated it, while retained messages keep their
-original Run IDs. The Runtime never stores a shared current Run or Session ID.
+`RunState.messages` 保存本次运行使用的有效历史；`new_messages` 单独累积本轮新增的
+user、assistant 和 tool 消息，不依赖历史切片起点，也不包含摘要。
 
-## Context compaction and memory recall
+`RunResult` 返回 `status`、`final_answer`、`messages`、`new_messages`、
+`steps_used`、`tool_executions`、`run_id`、`compacted` 和 `error`。
+其中 `messages` 不含 system prompt，可在持久化成功后成为下一轮的有效历史。
 
-Before every normal LLM call (including calls after tool execution), the Runtime
-checks `len(json.dumps({"messages": ..., "tools": ...}, ensure_ascii=False)) / 4`.
-The estimate includes the system prompt and tool schemas, but excludes local
-summary metadata. The defaults assume a 1,000,000-token window and trigger
-compaction at 70%; this is application configuration, not automatic model-limit
-discovery. Character counting is only a heuristic, especially for Chinese, and
-cannot guarantee that the provider will accept the request.
+`owner_id` 表示本地归属，`session_id` 表示可持续的独立对话，`run_id` 表示一次执行。
+同一 Session 的每次提问使用新的 Run ID；内部请求重试仍属于同一个 Run。
 
-The `ContextCompactor` reuses the same LLM client and stores no Session state.
-It summarizes the previous summary plus older whole turns, keeping exactly
-`keep_recent_turns` recent turns intact (four by default). If fewer turns exist,
-all are protected and there are no older turns to summarize. Retention is never
-reduced to fit the budget. The current Run is separately protected, and tool
-calls/results remain paired. Summary requests use
-`tools=[]`, are not Agent steps, and never recursively call the Runtime.
+## 3. Memory：召回时机与放置方式
 
-The effective history has this shape:
+这里的 memory 是“有效历史 + 可选的滚动摘要”，不是向量数据库或自动长期记忆。
+LLM 不会因为 Client 长期复用就自动记住之前的请求；连续追问依靠每次显式传入相关历史。
+
+### 什么时候召回？
+
+1. **新建对话**：ActiveConversation 从空 history 开始，不读取历史、不立即创建 Session。
+2. **恢复 Session**：验证 Owner 后，从 SQLite 加载一次有效历史，创建 ActiveConversation。
+3. **连续追问**：直接使用 ActiveConversation 的内存 history，不再从 SQLite 重新加载。
+4. **同一 Run 内继续调用工具**：使用 RunState 中刚追加的工具调用和结果，不查询数据库。
+5. **每轮结束并保存成功后**：更新内存 history，供下一次提问使用。
+
+因此，纯对话追问可以看到前一轮 user/assistant；工具追问还可以看到完整的工具调用、
+参数、tool 结果和最终回答。更早的内容被压缩后，只能通过摘要中的信息继续引用。
+
+### 放在请求的什么位置？
+
+发给 LLM 的 messages 顺序如下；这是结构示意，实际近期历史可以包含多轮：
 
 ```python
 [
-    {"role": "assistant", "content": "历史摘要：...",
-     "_kind": "context_summary", "_run_id": "summary-producing-run-uuid"},
-    # Recent complete user / assistant / tool messages, followed by this Run.
+    {"role": "system", "content": system_prompt},
+    {"role": "assistant", "content": "历史摘要：用户目标、约束、关键结果……"},
+    # 最近未压缩的完整轮次：
+    # user -> assistant(tool_calls) -> tool -> assistant
+    {"role": "user", "content": current_user_input},
+    # 当前 Run 已产生的 assistant / tool 消息继续追加在这里
 ]
 ```
 
-There is at most one summary. It is historical data, not a system instruction.
-`_kind` is persisted locally and removed before sending messages to the model.
-The system prompt is prepended only for LLM requests. On Session resume, this
-summary and the retained messages are loaded once; on subsequent questions they
-are recalled from memory automatically. No retrieval index or archive lookup is
-used. A later compaction merges the existing summary rather than stacking new
-summaries on top of it.
+未发生压缩时省略摘要。tools Schema 通过请求的独立 `tools` 参数传入，不放进 messages。
 
-Configure the policy when creating a Runtime:
+- system prompt 每次请求时注入，不存入 Session 历史。
+- 摘要使用 assistant 消息放在历史开头，是历史资料，不是更高优先级的 system 指令。
+- 当前 Run 的消息保持原样，不纳入本轮压缩。
+- 内部消息带有 `_run_id`；摘要还带有 `_kind="context_summary"`。
+  正常请求和摘要请求发送前都会移除这两个内部标记。
+- SQLite 将 Run ID 放在 `messages.run_id` 列；恢复时再补回 `_run_id`。
+  `_kind` 保存在摘要的 JSON payload 中。
+
+trace 文件不加入上述 messages，也没有从 trace 自动检索或恢复遗漏事实的逻辑。
+
+## 4. Context 压缩与保存
+
+### 触发与摘要
+
+每次正常 LLM 调用之前（包括工具执行之后），计算：
 
 ```python
-from mini_agent import ContextPolicy
+estimated_tokens = len(
+    json.dumps({"messages": request_messages, "tools": tools}, ensure_ascii=False)
+) / 4
+```
 
+默认使用 `context_limit=1_000_000`、`trigger_ratio=0.7`，
+即估算达到 700,000 tokens 时尝试压缩。1M 是本项目的配置假设，
+不是自动检测到的模型能力；应按所选模型调整。字符数 / 4 对中文等内容可能低估，
+不能保证实际请求不超限。
+
+压缩过程：
+
+1. 从历史中取出已有摘要，按 user 消息划分完整轮次。
+2. 固定保留最近 `keep_recent_turns` 轮（默认 4 轮）及当前 Run，不能拆开工具调用与结果。
+3. 将“已有摘要 + 更早轮次”交给同一个 LLM Client，使用独立摘要 Prompt 和 `tools=[]`。
+4. 保留目标、事实与约束、已完成事项、关键工具结果及未完成事项；保留 mock 标记。
+5. 摘要检查通过后，用一条新摘要取代旧摘要与更早历史。
+
+最近轮次数量不会为了满足预算而自动减少。历史不足或等于保留轮数时全部受保护；
+如果仍超出预算，就返回错误，而不是截断用户输入。
+
+摘要必须是非空文本、不包含工具调用、不超过长度限制；替换后的完整请求必须确实变短，
+并低于触发线和输入预算。摘要请求本身也要满足输入预算，不做分块或递归摘要。
+摘要内容不合格不会自动重新生成；底层临时请求故障仍适用客户端重试。
+
+### 配置示例
+
+```python
+from mini_agent import AgentDefinition, ContextPolicy
+from mini_agent.tools import CalculatorTool, SearchTool, WeatherTool
+
+definition = AgentDefinition(
+    system_prompt="按需使用工具，并清楚说明结果。",
+    tools=[CalculatorTool(), SearchTool(), WeatherTool()],
+)
 runtime = definition.create_runtime(
+    max_steps=8,
     context_policy=ContextPolicy(
         context_limit=1_000_000,
         trigger_ratio=0.7,
@@ -203,112 +255,118 @@ runtime = definition.create_runtime(
 )
 ```
 
-`max_summary_chars` limits only generated summary text, not retained turns or the
-current Run; no maximum-length placeholder is reserved. A short historical-summary
-label is added locally. `output_reserve` reduces the estimated input budget;
-it does not change the provider's output-token setting. Small test limits must
-also use a smaller reserve and summary length. Summary responses are accepted
-only if they are non-empty text without tool calls, fit the summary length,
-reduce the estimated request size, and leave it below the trigger and input
-budget. Summary requests themselves must fit the estimated input budget.
+`max_summary_chars` 只限制生成的摘要文本，不限制保留轮次的长度，
+也不按最大摘要长度预占空间。`output_reserve` 用于估算输入预算
+`context_limit - output_reserve`，不改变模型接口的输出 token 设置。
+摘要调用及请求重试不消耗正常 Agent 的 `max_steps`。
 
-An invalid/failed summary returns `compaction_error`; an uncompressible context
-returns `context_limit_exceeded`. Both stop the Run without saving any of its
-history or updating the active memory, even if an earlier compaction in the Run
-succeeded. A newly created empty Session may remain. Invalid summary content is
-not regenerated automatically; transient request failures use the bounded client
-retries described above. No chunking, silent truncation, or over-budget fallback
-is performed. Ordinary
-LLM failures and `max_steps` still save partial Run history as before. Previously
-executed tool side effects cannot be undone by refusing to save messages.
+### 如何保存到 SQLite？
 
-### SQLite snapshot replacement
+每条 message 对应 `messages` 表的一条记录，按 Session 内的 `sequence` 排序。
 
-Compaction does **not** preserve an archive. `replace_history(owner_id,
-session_id, messages)` receives the entire new effective history, including this
-Run. It serializes all payloads first, starts a transaction, verifies ownership,
-deletes all message rows for that Session, inserts the new snapshot, updates the
-Session timestamp, and commits. Any database failure rolls back the deletion
-and inserts. It never deletes the Session itself or affects another Session.
-The caller must not append `new_messages` after replacement.
+- **未压缩**：只追加 `RunResult.new_messages`。
+- **已压缩**：调用 `replace_history()`，整体替换该 Session 的有效历史，
+  包含新摘要、保留轮次和当前 Run 消息；替换后不能再次追加本轮消息。
 
-The existing tables are reused. Store initialization migrates the legacy
-`turn_id` column to `run_id` transactionally, preserving existing values and
-messages; repeated initialization does not repeat the migration. Old identities
-remain historical labels and cannot reconstruct traces that were never recorded.
-Messages are renumbered from 1 and receive snapshot timestamps, but their Run IDs
-and tool-call IDs are preserved. Replacement requires `_run_id` on every message
-and checks it before deleting anything. Session identity, title, and creation time are unchanged.
-These message records are a current context snapshot, not an original audit
-trail. Summarized source text is no longer available from the Session history:
-exact quotations, recovery of omitted facts, and original message timestamps
-cannot be guaranteed. Concurrent writers to the same Session remain unsupported.
+替换时先序列化所有新消息，再在同一个事务中校验 Owner、删除目标 Session 的全部旧消息、
+插入新列表并更新 Session 时间。无需计算旧消息有多少条；中途失败全部回滚，
+不删除 Session 本身，不影响其他 Session。
 
-Compaction logs use Python logging (`mini_agent.context.compactor`) and contain
-event names, estimated sizes, retained-turn counts, and safe error types, not
-full messages. Enable INFO logging in an embedding application to see successful
-compactions. Full execution traces are separate from these compaction logs.
+数据库提交成功后才更新内存 history。替换后消息序号从 1 重排、消息时间为快照写入时间，
+但保留轮次原来的 Run ID 和 tool-call ID 不变；新摘要属于生成它的 Run。
 
-## Run traces
+旧数据库中的 `turn_id` 列会在初始化时迁移为 `run_id`，保留原有值；
+不会凭空补出过去未记录的 trace。
 
-The application creates one `TraceRecorder` and injects it into the reusable
-Runtime. Events are saved immediately as a UTF-8 JSON array, one file per Run:
-`<data_dir>/traces/<run_id>.json`, formatted with `indent=2` and readable Unicode.
-Each event updates the complete document through a temporary file and atomic
-replacement, preserving the previous trace if replacement fails. Existing
-`.jsonl` files are not converted or deleted. No trace directory is created until
-an event is written. A standalone Runtime does not trace unless explicitly configured:
+**数据保留限制：** SQLite 只保留有效上下文，被摘要覆盖的原文不再出现在 Session 历史中，
+不能保证逐字引用或找回遗漏细节。trace 是独立记录，可能仍含这些原文，
+但不会被 Agent 自动召回，也不会随着压缩自动删除。
+
+## 5. 异常处理与执行 trace
+
+### 异常与重试
+
+Run 结果状态包括：
+
+- `completed`：获得最终答案。
+- `max_steps_exceeded`：达到正常 Agent LLM 调用次数上限。
+- `llm_error`：模型请求最终失败。
+- `llm_protocol_error`：响应没有有效文本或工具调用。
+- `compaction_error`：摘要请求最终失败，或摘要内容不合格。
+- `context_limit_exceeded`：无法在保留规则下满足上下文预算。
+
+后两种状态不会写回本轮历史，也不会更新会话内存，即使该 Run 更早时曾成功压缩。
+普通 LLM 错误或步数耗尽仍保存已产生的部分消息。数据库保存失败同样不更新内存。
+已经执行的工具副作用不会因为停止或保存失败而撤销。
+
+`DeepSeekClient.llm_call()` 最多尝试 3 次：首次请求加 2 次重试，异步等待 1 秒、2 秒。
+只重试连接错误、SDK 超时、HTTP 429 和 5xx；认证失败、非法参数、取消操作和无效响应不重试。
+SDK 自带重试已关闭，耗尽后重新抛出最后一次异常，由 Runtime 或 Compactor 处理。
+重试不重复追加消息或执行工具。
+
+### Trace
+
+CLI 默认将事件保存为 `traces/<run_id>.json`，每个文件是可读的 UTF-8 JSON 数组：
+
+- `user.input`：当前用户输入。
+- `assistant.output`：正常模型响应的文本与工具调用，不含内部思考。
+- `tool.start` / `tool.end`：工具名称、调用 ID、参数、结果或错误、耗时。
+- `run.end`：结束状态、步数、错误和总耗时。
+
+事件包含 UTC 时间、Run ID、Session ID、事件序号和当前 step。每次写入通过临时文件替换，
+尽量保留上一次完整记录；写入失败只产生警告，不改变 Agent 执行结果。
+正常结束、可处理错误和取消操作都会尝试记录结束事件，但强制终止进程仍可能留下不完整 trace。
+
+`run.end` 表示 Runtime 结束，不代表 SQLite 提交成功。trace 不随 Session 事务回滚。
+
+Trace 会记录用户原文、assistant 输出、工具参数和结果，可能包含敏感信息。
+文件已被 Git 忽略，没有自动清理；`--no-trace` 仅关闭后续记录，不删除已有文件。
+压缩日志另由 `mini_agent.context.compactor` 的 Python logger 输出，不包含完整历史。
+
+## 6. 在代码中使用连续对话
 
 ```python
-from pathlib import Path
-from mini_agent import TraceRecorder
+import asyncio
 
-runtime = definition.create_runtime(trace_recorder=TraceRecorder(Path("traces")))
-result = await runtime.run("Calculate 6 times 7")
-print(result.run_id)
+from mini_agent.app import build_conversation_manager
+
+
+async def main():
+    conversations = build_conversation_manager(trace_enabled=False)
+    conversation = conversations.new_conversation()
+
+    first = await conversation.send_message("我叫小明。")
+    second = await conversation.send_message("我叫什么？")
+    print(first.final_answer or first.error)
+    print(second.final_answer or second.error)
+
+    resumed = conversations.resume_conversation(conversation.session_id)
+    third = await resumed.send_message("继续刚才的对话。")
+    print(third.final_answer or third.error)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
 ```
 
-Applications can also pass `trace_enabled=False` to
-`build_conversation_manager()`. Prebuilt managers retain their own configuration.
+需要持久化和自动追问历史时，使用 ActiveConversation。
+直接调用 `runtime.run()` 不会自动创建 Session、保存历史或读取上一次调用；
+调用者需要自己传入 `context_messages`。独立 Runtime 的 trace 默认关闭，
+可在创建时显式传入 `TraceRecorder`。
 
-Each event contains `timestamp` (UTC ISO 8601), `run_id`, `session_id` (nullable),
-`sequence` (starting at 1 per Run), `step`, `event`, and `data`. Trace sequence is
-not the SQLite message sequence. Durations use a monotonic clock in milliseconds.
-
-- `user.input`: the current input, recorded before compaction checks.
-- `assistant.output`: each normal LLM response's content and tool calls, not just
-  the final answer. Internal reasoning is excluded.
-- `tool.start`: call ID, tool name, and raw arguments before validation/execution.
-- `tool.end`: call ID, name, parsed arguments (when available), success/error
-  result, and duration. Validation failures, unknown tools, and cancellation are
-  recorded too.
-- `run.end`: status, step count, error, and total duration. Normal returns and
-  handled errors produce one end event; unexpected exceptions and cancellation
-  are recorded as `unhandled_error`/`cancelled` and then propagated. An abrupt
-  process termination can still leave an incomplete trace.
-
-`run.end` means the Runtime ended, **not** that SQLite persistence succeeded.
-Trace writing does not roll back with Session history. Logs never trigger tool
-retries: write/serialization errors produce a safe warning without changing the
-Agent result. Non-serializable tool values are represented by their type rather
-than arbitrary object representations.
-
-**Privacy and retention:** traces contain original user text, assistant outputs,
-tool arguments, and results, which may contain sensitive data. Infrastructure
-credentials, HTTP headers, full request history, and model internal reasoning
-are not intentionally logged. Trace files are local and Git-ignored, are not
-sent back to the model, and are not deleted by context compaction. There is no
-automatic cleanup or archive recall; use `--no-trace` to avoid recording future
-Runs. Disabling tracing does not remove existing files.
-
-See [AI prompts and problem-solving notes](docs/AI_PROMPTS.md) for the summary
-prompt contract and implementation decisions.
-
-## Test
+## 7. 测试与补充资料
 
 ```powershell
-.venv\Scripts\python -m pytest
+.venv\Scripts\python.exe -m pytest -q
 ```
 
-Tests inject a deterministic fake LLM client, so the default suite does not use
-the network or consume API credit.
+目前保留 81 个关键测试，覆盖 Agent Loop、三个工具、Schema 校验、连续追问、
+Owner/Session 隔离、摘要与快照替换、数据库回滚、请求重试、Run ID 和 trace。
+测试使用 Fake LLM 或模拟 SDK，不调用真实 API，不消耗模型额度。
+
+- [单轮运行示例](examples/run_agent.py)
+- [领域词汇](CONTEXT.md)
+- [AI Prompt 与问题解决记录](docs/AI_PROMPTS.md)
+
+当前实现面向最小可用 Agent：没有向量检索、跨 Session 记忆召回、同 Session 并发写入、
+真实搜索或实时天气服务。Owner 隔离仅用于本地数据归属，不替代生产环境的访问控制。
