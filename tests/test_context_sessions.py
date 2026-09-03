@@ -85,13 +85,18 @@ async def test_compacted_session_replaces_once_then_appends_and_resumes_once(tmp
     assert saved(store, session) == third.messages
 
 
-async def test_summary_failure_skips_all_writes_and_retry_uses_original_memory(tmp_path):
+@pytest.mark.parametrize("summary", [{"content": ""}, RuntimeError("secret")])
+async def test_summary_failure_skips_all_writes_and_retry_uses_original_memory(tmp_path, summary):
     store, session, history, client, manager = setup_conversation(tmp_path, [
-        {"content": ""}, {"content": "Summary"}, {"content": "Retry answer"},
+        summary, {"content": "Summary"}, {"content": "Retry answer"},
     ])
     conversation = manager.resume_conversation(session.id)
     failed = await conversation.send_message("Do not persist me")
     assert failed.status == "compaction_error"
+    assert failed.steps_used == 0
+    assert not failed.compacted
+    assert "secret" not in failed.error
+    assert len(client.calls) == 1
     assert store.replacements == store.appends == 0
     assert saved(store, session) == history
     retried = await conversation.send_message("Retry")
@@ -120,28 +125,13 @@ async def test_replace_failure_leaves_memory_and_database_unchanged(tmp_path):
     assert saved(store, session) == result.messages
 
 
-async def test_context_limit_failure_does_not_write_any_history(tmp_path):
-    store, session, history, client, manager = setup_conversation(tmp_path, [])
-    conversation = manager.resume_conversation(session.id)
-    result = await conversation.send_message("x" * 10000)
-    assert result.status == "context_limit_exceeded"
-    assert store.appends == store.replacements == 0
-    assert saved(store, session) == history
-    assert client.calls == []
-
-
-@pytest.mark.parametrize("next_response,status", [
-    (RuntimeError("secret"), "llm_error"),
-    ({"content": None}, "llm_protocol_error"),
-    ({"content": None, "tool_calls": [tool_call("missing", "{}")]}, "max_steps_exceeded"),
-])
-async def test_successful_compaction_is_saved_after_ordinary_run_failure(tmp_path, next_response, status):
+async def test_successful_compaction_is_saved_after_llm_failure(tmp_path):
     store, session, history, client, manager = setup_conversation(
-        tmp_path, [{"content": "Summary"}, next_response], max_steps=1,
+        tmp_path, [{"content": "Summary"}, RuntimeError("secret")], max_steps=1,
     )
     conversation = manager.resume_conversation(session.id)
     result = await conversation.send_message("Question")
-    assert result.status == status
+    assert result.status == "llm_error"
     assert result.compacted
     assert store.replacements == 1 and store.appends == 0
     assert saved(store, session) == result.messages

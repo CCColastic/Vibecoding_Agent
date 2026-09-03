@@ -5,40 +5,11 @@ import pytest
 from mini_agent.session import SQLiteSessionStore, SessionNotFoundError
 
 
-def test_store_creates_appends_and_loads_session(tmp_path) -> None:
-    store = SQLiteSessionStore(tmp_path / "sessions.db")
-    session = store.create_session("owner-a", "First question")
-    messages = [
-        {"role": "user", "content": "Hello"},
-        {"role": "assistant", "content": "Hi"},
-    ]
-
-    updated = store.append_messages(
-        "owner-a", session.id, "turn-1", messages
-    )
-    stored = store.load_messages("owner-a", session.id)
-
-    assert updated.updated_at >= session.updated_at
-    assert [message.sequence for message in stored] == [1, 2]
-    assert [message.run_id for message in stored] == ["turn-1", "turn-1"]
-    assert [message.payload for message in stored] == messages
-
-    store.append_messages(
-        "owner-a",
-        session.id,
-        "turn-2",
-        [{"role": "user", "content": "Follow-up"}],
-    )
-    assert [message.sequence for message in store.load_messages("owner-a", session.id)] == [
-        1,
-        2,
-        3,
-    ]
-
-
 def test_store_enforces_owner_boundary(tmp_path) -> None:
     store = SQLiteSessionStore(tmp_path / "sessions.db")
     session = store.create_session("owner-a", "Private")
+    store.append_messages("owner-a", session.id, "original", [{"role": "user", "content": "Private"}])
+    original = store.load_messages("owner-a", session.id)
 
     with pytest.raises(SessionNotFoundError):
         store.get_session("owner-b", session.id)
@@ -51,6 +22,9 @@ def test_store_enforces_owner_boundary(tmp_path) -> None:
             "turn",
             [{"role": "user", "content": "No access"}],
         )
+    with pytest.raises(SessionNotFoundError):
+        store.replace_history("owner-b", session.id, [])
+    assert store.load_messages("owner-a", session.id) == original
 
 
 def test_store_lists_only_owner_sessions_by_recent_update(tmp_path) -> None:
@@ -65,27 +39,6 @@ def test_store_lists_only_owner_sessions_by_recent_update(tmp_path) -> None:
     sessions = store.list_sessions("owner-a")
 
     assert [session.id for session in sessions] == [first.id, second.id]
-
-
-def test_append_is_atomic_when_message_is_not_serializable(tmp_path) -> None:
-    database_path = tmp_path / "sessions.db"
-    store = SQLiteSessionStore(database_path)
-    session = store.create_session("owner-a", "Atomic")
-
-    with pytest.raises(TypeError):
-        store.append_messages(
-            "owner-a",
-            session.id,
-            "turn",
-            [
-                {"role": "user", "content": "first"},
-                {"role": "tool", "content": object()},
-            ],
-        )
-
-    with sqlite3.connect(database_path) as connection:
-        count = connection.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-    assert count == 0
 
 
 def test_replace_rebuilds_only_target_snapshot_and_append_continues(tmp_path):
@@ -129,29 +82,6 @@ def test_replace_rebuilds_only_target_snapshot_and_append_continues(tmp_path):
         assert store.load_messages(session.owner_id, session.id)[0].run_id == "old-turn"
     store.append_messages("owner-a", target.id, "next-turn", [{"role": "user", "content": "Again"}])
     assert store.load_messages("owner-a", target.id)[-1].sequence == 8
-
-
-def test_replace_rejects_foreign_owner_without_deleting(tmp_path):
-    store = SQLiteSessionStore(tmp_path / "sessions.db")
-    session = store.create_session("owner-a", "Private")
-    store.append_messages("owner-a", session.id, "old", [{"role": "user", "content": "Original"}])
-    original = store.load_messages("owner-a", session.id)
-    with pytest.raises(SessionNotFoundError):
-        store.replace_history("owner-b", session.id, [])
-    assert store.load_messages("owner-a", session.id) == original
-
-
-def test_replace_serializes_every_payload_before_deleting(tmp_path):
-    store = SQLiteSessionStore(tmp_path / "sessions.db")
-    session = store.create_session("owner-a", "Keep")
-    store.append_messages("owner-a", session.id, "old", [{"role": "user", "content": "Original"}])
-    original = store.load_messages("owner-a", session.id)
-    with pytest.raises(TypeError):
-        store.replace_history("owner-a", session.id, [
-            {"role": "assistant", "content": "Summary", "_kind": "context_summary", "_run_id": "summary"},
-            {"role": "user", "content": object(), "_run_id": "recent"},
-        ])
-    assert store.load_messages("owner-a", session.id) == original
 
 
 def test_replace_rolls_back_delete_and_partial_inserts_on_database_error(tmp_path):

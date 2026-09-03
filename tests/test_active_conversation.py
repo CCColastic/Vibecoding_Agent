@@ -43,38 +43,6 @@ def make_runtime(client: FakeLLMClient):
     return definition.create_runtime(llm_client=client)
 
 
-async def test_new_conversation_is_lazy_and_reuses_memory_history() -> None:
-    client = FakeLLMClient(
-        [
-            {"role": "assistant", "content": "Hello Ada"},
-            {"role": "assistant", "content": "Your name is Ada"},
-        ]
-    )
-    store = RecordingStore()
-    runtime = make_runtime(client)
-    conversation = ActiveConversation(
-        owner_id="owner-a",
-        session_id=None,
-        history=[],
-        runtime=runtime,
-        store=store,
-    )
-
-    assert store.created == []
-    first = await conversation.send_message("My name is Ada")
-    second = await conversation.send_message("What is my name?")
-
-    assert conversation.session_id == "session-1"
-    assert store.created[0] == ("owner-a", "My name is Ada")
-    assert len(store.created) == 1
-    assert second.steps_used == 1
-    assert client.calls[1]["messages"] == [
-        {"role": "system", "content": "Remember context"},
-        *message_payloads(first.new_messages),
-        {"role": "user", "content": "What is my name?"},
-    ]
-
-
 async def test_tool_messages_are_available_to_follow_up() -> None:
     client = FakeLLMClient(
         [
@@ -106,7 +74,9 @@ async def test_tool_messages_are_available_to_follow_up() -> None:
 
     assert first.tool_executions[0].result.content == 42
     second_call_messages = client.calls[2]["messages"]
-    assert any(message.get("role") == "tool" for message in second_call_messages)
+    assert second_call_messages[1:-1] == message_payloads(first.new_messages)
+    assert store.created[0][1] == "Calculate 6 times 7"
+    assert len(store.created) == 1
 
 
 async def test_failed_persistence_does_not_update_memory() -> None:

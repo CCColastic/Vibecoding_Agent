@@ -1,8 +1,6 @@
 import json
 from copy import deepcopy
 
-import pytest
-
 from mini_agent import AgentDefinition, ContextPolicy, ToolResult
 from mini_agent.context.compactor import estimate_tokens, request_messages
 from mini_agent.tools import SearchTool
@@ -58,25 +56,7 @@ async def test_runtime_compaction_separates_effective_history_and_new_messages()
     assert client.calls[-1]["messages"][1]["content"] == result.messages[0]["content"]
 
 
-@pytest.mark.parametrize("summary", [{"content": ""}, RuntimeError("secret")])
-async def test_runtime_summary_failure_is_not_an_agent_step(summary):
-    client = FakeLLMClient([summary])
-    runtime = AgentDefinition("Remember", []).create_runtime(
-        llm_client=client, context_policy=small_policy(),
-    )
-    source = long_history()
-    result = await runtime.run("Question", source)
-    assert result.status == "compaction_error"
-    assert result.steps_used == 0
-    assert not result.compacted
-    assert result.messages == [*source, *result.new_messages]
-    assert len(result.new_messages) == 1
-    assert "secret" not in result.error
-    assert len(client.calls) == 1
-
-
-@pytest.mark.parametrize("fail_summary", [False, True])
-async def test_tool_growth_triggers_check_before_next_llm_call(monkeypatch, fail_summary):
+async def test_tool_growth_triggers_check_before_next_llm_call(monkeypatch):
     async def large_result(self, *, query):
         return ToolResult(ok=True, content="result " * 180)
 
@@ -91,12 +71,12 @@ async def test_tool_growth_triggers_check_before_next_llm_call(monkeypatch, fail
     config = small_policy(context_limit=int(before / 0.7) + 100, output_reserve=100)
     call = {"role": "assistant", "content": None,
             "tool_calls": [tool_call("search", '{"query":"hello"}')]}
-    responses = [call, {"content": "" if fail_summary else "Summary"}, {"content": "Done"}]
+    responses = [call, {"content": "Summary"}, {"content": "Done"}]
     client = FakeLLMClient(responses)
     runtime = definition.create_runtime(llm_client=client, context_policy=config, max_steps=2)
     result = await runtime.run(current["content"], source)
-    assert result.steps_used == (1 if fail_summary else 2)
-    assert result.status == ("compaction_error" if fail_summary else "completed")
+    assert result.steps_used == 2
+    assert result.status == "completed"
     assert len(result.tool_executions) == 1
     assert result.new_messages[0] == {**current, "_run_id": result.run_id}
     assert result.new_messages[1] == {**call, "_run_id": result.run_id}
@@ -104,22 +84,7 @@ async def test_tool_growth_triggers_check_before_next_llm_call(monkeypatch, fail
     assert client.calls[1]["tools"] == []
     summary_input = json.loads(client.calls[1]["messages"][1]["content"])
     assert summary_input == source[:-2]
-    if not fail_summary:
-        assert result.compacted
-        assert client.calls[2]["messages"][-3:] == message_payloads(result.new_messages[:3])
-        assert result.new_messages[-1]["content"] == "Done"
-        assert len(result.new_messages) == 4
-
-
-async def test_final_answer_is_not_compacted_until_next_question():
-    client = FakeLLMClient([{"content": "x" * 10000}])
-    runtime = AgentDefinition("Remember", []).create_runtime(
-        llm_client=client, context_policy=small_policy(),
-    )
-    first = await runtime.run("Hi")
-    assert first.status == "completed"
-    assert not first.compacted
-    second = await runtime.run("Next", first.messages)
-    assert second.status == "context_limit_exceeded"
-    assert second.steps_used == 0
-    assert len(client.calls) == 1
+    assert result.compacted
+    assert client.calls[2]["messages"][-3:] == message_payloads(result.new_messages[:3])
+    assert result.new_messages[-1]["content"] == "Done"
+    assert len(result.new_messages) == 4

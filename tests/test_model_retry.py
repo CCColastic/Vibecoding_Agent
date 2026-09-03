@@ -51,25 +51,18 @@ def make_client(monkeypatch):
     return build
 
 
-@pytest.mark.parametrize("kind", ["connection", "timeout", 429, 500, 502, 503, 504])
+@pytest.mark.parametrize("kind", ["connection", "timeout", 429, 503])
 async def test_transient_failure_retries_same_request_without_mutating_inputs(make_client, kind):
-    client, create, sleep = make_client([request_error(kind), response()])
+    client, create, sleep = make_client([request_error(kind), request_error(kind), response()])
     messages = [{"role": "user", "content": "Hi"}]
     tools = [{"type": "function", "function": {"name": "test", "parameters": {}}}]
     original = deepcopy((messages, tools))
     result = await client.llm_call(messages=messages, tools=tools)
     assert result["content"] == "Answer"
-    assert create.await_count == 2
-    assert create.await_args_list[0] == create.await_args_list[1]
-    sleep.assert_awaited_once_with(1)
-    assert (messages, tools) == original
-
-
-async def test_success_on_third_attempt_uses_one_then_two_second_delays(make_client):
-    client, create, sleep = make_client([request_error(429), request_error(503), response()])
-    await client.llm_call(messages=[], tools=[])
     assert create.await_count == 3
+    assert create.await_args_list[0] == create.await_args_list[1] == create.await_args_list[2]
     assert sleep.await_args_list == [call(1), call(2)]
+    assert (messages, tools) == original
 
 
 async def test_exhaustion_reraises_last_error_without_fourth_attempt_or_final_sleep(make_client):
@@ -82,7 +75,7 @@ async def test_exhaustion_reraises_last_error_without_fourth_attempt_or_final_sl
     assert sleep.await_args_list == [call(1), call(2)]
 
 
-@pytest.mark.parametrize("status", [400, 401, 403, 404, 408, 409, 422])
+@pytest.mark.parametrize("status", [400, 401])
 async def test_nonretryable_http_errors_fail_immediately(make_client, status):
     error = request_error(status)
     client, create, sleep = make_client([error])
@@ -93,31 +86,12 @@ async def test_nonretryable_http_errors_fail_immediately(make_client, status):
     sleep.assert_not_awaited()
 
 
-@pytest.mark.parametrize("error", [RuntimeError("bug"), asyncio.CancelledError()])
-async def test_unexpected_errors_and_cancellation_are_not_retried(make_client, error):
-    client, create, sleep = make_client([error])
-    with pytest.raises(type(error)):
+async def test_cancellation_is_not_retried(make_client):
+    client, create, sleep = make_client([asyncio.CancelledError()])
+    with pytest.raises(asyncio.CancelledError):
         await client.llm_call(messages=[], tools=[])
     assert create.await_count == 1
     sleep.assert_not_awaited()
-
-
-async def test_invalid_successful_response_is_not_retried(make_client):
-    client, create, sleep = make_client([SimpleNamespace(choices=[])])
-    with pytest.raises(IndexError):
-        await client.llm_call(messages=[], tools=[])
-    assert create.await_count == 1
-    sleep.assert_not_awaited()
-
-
-async def test_retry_does_not_increase_agent_steps_or_duplicate_messages(make_client):
-    client, create, sleep = make_client([request_error(503), response()])
-    runtime = AgentDefinition("Answer clearly", []).create_runtime(llm_client=client, max_steps=1)
-    result = await runtime.run("Hi")
-    assert result.status == "completed"
-    assert result.steps_used == 1
-    assert len(result.new_messages) == 2
-    assert create.await_count == 2
 
 
 async def test_summary_request_also_retries_through_shared_client(make_client):

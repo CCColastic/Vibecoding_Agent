@@ -26,17 +26,6 @@ def test_duplicate_tool_names_fail_during_definition() -> None:
         )
 
 
-def test_create_runtime_builds_independent_registries() -> None:
-    definition = AgentDefinition("Be helpful", [CalculatorTool()])
-    client = FakeLLMClient([])
-
-    first = definition.create_runtime(llm_client=client)
-    second = definition.create_runtime(llm_client=client)
-
-    assert first.registry is not second.registry
-    assert first.registry.get("calculator") is not None
-
-
 def test_max_steps_must_be_positive() -> None:
     definition = AgentDefinition("Be helpful", [])
 

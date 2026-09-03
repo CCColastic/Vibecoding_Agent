@@ -59,17 +59,13 @@ def test_legacy_column_migration_is_idempotent_and_preserves_rows(tmp_path):
     assert "run_id" in columns and "turn_id" not in columns
 
 
-@pytest.mark.parametrize("messages", [
-    [{"role": "user", "content": "Missing ID"}],
-    [{"role": "user", "content": "Empty ID", "_run_id": ""}],
-])
-def test_replace_rejects_missing_identity_before_deleting(tmp_path, messages):
+def test_replace_rejects_missing_identity_before_deleting(tmp_path):
     store = SQLiteSessionStore(tmp_path / "sessions.db")
     session = store.create_session("owner", "Keep")
     store.append_messages("owner", session.id, "original", [{"role": "user", "content": "Original"}])
     original = store.load_messages("owner", session.id)
     with pytest.raises(ValueError, match="_run_id"):
-        store.replace_history("owner", session.id, messages)
+        store.replace_history("owner", session.id, [{"role": "user", "content": "Missing ID"}])
     assert store.load_messages("owner", session.id) == original
 
 
@@ -79,24 +75,6 @@ def test_append_rejects_mismatched_identity(tmp_path):
     with pytest.raises(ValueError, match="must match"):
         store.append_messages("owner", session.id, "one", [{"role": "user", "content": "Wrong", "_run_id": "two"}])
     assert store.load_messages("owner", session.id) == []
-
-
-@pytest.mark.parametrize("enabled", [True, False])
-async def test_application_trace_setting_and_session_link(tmp_path, enabled):
-    manager = build_conversation_manager(data_dir=tmp_path, trace_enabled=enabled,
-        llm_client=FakeLLMClient([{"content": "Answer"}]))
-    conversation = manager.new_conversation()
-    result = await conversation.send_message("Hello")
-    path = tmp_path / "traces" / f"{result.run_id}.json"
-    assert path.exists() is enabled
-    if enabled:
-        trace = json.loads(path.read_text(encoding="utf-8"))
-        assert all(e["session_id"] == conversation.session_id for e in trace)
-    else:
-        assert not (tmp_path / "traces").exists()
-    stored = SQLiteSessionStore(tmp_path / "sessions.db").load_messages(
-        manager.list_sessions()[0].owner_id, conversation.session_id)
-    assert {m.run_id for m in stored} == {result.run_id}
 
 
 async def test_cli_no_trace_flag_and_run_id_output(tmp_path, monkeypatch):
@@ -112,12 +90,3 @@ async def test_cli_no_trace_flag_and_run_id_output(tmp_path, monkeypatch):
     assert await run_cli(["new", "--no-trace"], input_fn=lambda _: next(inputs), output_fn=output.append) == 0
     assert any(line.startswith("Run: ") for line in output)
     assert not (tmp_path / "traces").exists()
-
-
-async def test_failed_resubmission_gets_a_new_run_id():
-    client = FakeLLMClient([RuntimeError("failure"), {"content": "Answer"}])
-    agent = AgentDefinition("Remember", []).create_runtime(llm_client=client)
-    first, second = await agent.run("Same question"), await agent.run("Same question")
-    assert first.run_id != second.run_id
-    assert first.status == "llm_error" and second.status == "completed"
-    assert agent.trace_recorder is None

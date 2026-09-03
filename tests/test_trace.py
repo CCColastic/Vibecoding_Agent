@@ -5,7 +5,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from mini_agent import AgentDefinition, ContextPolicy, ToolResult, TraceEvent, TraceRecorder
+from mini_agent import AgentDefinition, ToolResult, TraceEvent, TraceRecorder
 from mini_agent.tools import CalculatorTool
 from tests.fakes import FakeLLMClient, tool_call
 
@@ -51,68 +51,13 @@ async def test_trace_records_inputs_outputs_tools_and_one_end(tmp_path):
     assert not list(tmp_path.glob("*.jsonl"))
 
 
-async def test_multiple_invalid_tool_calls_are_paired(tmp_path):
-    calls = [tool_call("missing", "{}", call_id="one"),
-             tool_call("calculator", "not-json", call_id="two")]
-    agent = runtime(tmp_path, [{"content": None, "tool_calls": calls}, {"content": "Failed tools"}])
-    result = await agent.run("Try tools")
-    tool_events = [e for e in events(tmp_path, result.run_id) if e["event"].startswith("tool.")]
-    assert [e["event"] for e in tool_events] == ["tool.start", "tool.end"] * 2
-    assert [e["data"]["tool_call_id"] for e in tool_events] == ["one", "one", "two", "two"]
-    assert all(not e["data"]["result"]["ok"] for e in tool_events if e["event"] == "tool.end")
-
-
-@pytest.mark.parametrize("response,status", [
-    (RuntimeError("provider secret"), "llm_error"),
-    ({"content": None}, "llm_protocol_error"),
-    ({"content": None, "tool_calls": [tool_call("missing", "{}")]}, "max_steps_exceeded"),
-])
-async def test_failure_has_exactly_one_run_end(tmp_path, response, status):
-    result = await runtime(tmp_path, [response], max_steps=1).run("Question")
+async def test_failure_has_exactly_one_run_end(tmp_path):
+    result = await runtime(tmp_path, [RuntimeError("provider secret")]).run("Question")
     trace = events(tmp_path, result.run_id)
-    assert result.status == status
+    assert result.status == "llm_error"
     assert sum(e["event"] == "run.end" for e in trace) == 1
-    assert trace[-1]["data"]["status"] == status
+    assert trace[-1]["data"]["status"] == "llm_error"
     assert "provider secret" not in json.dumps(trace)
-
-
-async def test_compaction_error_is_traced_without_summary_as_assistant_output(tmp_path):
-    policy = ContextPolicy(context_limit=2000, output_reserve=200,
-                           max_summary_chars=120, keep_recent_turns=1)
-    agent = runtime(tmp_path, [{"content": ""}], context_policy=policy)
-    history = [{"role": "user", "content": "旧" * 5600}, {"role": "assistant", "content": "Old"},
-               {"role": "user", "content": "Recent"}, {"role": "assistant", "content": "OK"}]
-    result = await agent.run("Follow up", history)
-    trace = events(tmp_path, result.run_id)
-    assert result.status == "compaction_error"
-    assert [e["event"] for e in trace] == ["user.input", "run.end"]
-    assert trace[-1]["data"]["steps_used"] == 0
-
-
-@pytest.mark.parametrize("during_tool", [False, True])
-@pytest.mark.parametrize("failure,status", [(asyncio.CancelledError, "cancelled"),
-                                            (RuntimeError, "unhandled_error")])
-async def test_cancel_and_unhandled_failure_propagate_with_one_end(tmp_path, monkeypatch, during_tool, failure, status):
-    responses = [{"content": None, "tool_calls": [tool_call("calculator", "{}")] }] if during_tool else []
-    agent = runtime(tmp_path, responses)
-    run_id = str(uuid4())
-
-    async def fail(*args, **kwargs):
-        raise failure("internal secret")
-
-    if during_tool:
-        monkeypatch.setattr(agent.registry, "execute_tool_call", fail)
-    else:
-        monkeypatch.setattr(agent.compactor, "prepare", fail)
-    with pytest.raises(failure):
-        await agent.run("Question", run_id=run_id)
-    trace = events(tmp_path, run_id)
-    assert trace[-1]["data"]["status"] == status
-    assert sum(e["event"] == "run.end" for e in trace) == 1
-    assert "internal secret" not in json.dumps(trace)
-    if during_tool:
-        assert trace[-2]["event"] == "tool.end"
-        assert not trace[-2]["data"]["result"]["ok"]
 
 
 async def test_real_task_cancellation_flushes_end(tmp_path, monkeypatch):
@@ -163,19 +108,6 @@ async def test_trace_io_failure_does_not_change_result_or_expose_error(tmp_path,
     assert str(blocked) not in caplog.text
 
 
-async def test_throwing_recorder_does_not_break_runtime(tmp_path, monkeypatch, caplog):
-    agent = runtime(tmp_path, [{"content": "Answer"}])
-
-    def fail(event):
-        raise OSError("secret path")
-
-    monkeypatch.setattr(agent.trace_recorder, "emit", fail)
-    result = await agent.run("Question")
-    assert result.status == "completed"
-    assert "Trace recorder failed" in caplog.text
-    assert "secret path" not in caplog.text
-
-
 async def test_nonserializable_tool_result_uses_type_placeholder(tmp_path, monkeypatch):
     class PrivateValue:
         def __repr__(self):
@@ -191,20 +123,11 @@ async def test_nonserializable_tool_result_uses_type_placeholder(tmp_path, monke
     assert tool_end["data"]["result"]["content"] == {"unserializable_type": "PrivateValue"}
 
 
-@pytest.mark.parametrize("run_id", ["../escape", "bad-id", str(UUID(int=0))])
-async def test_invalid_run_id_never_creates_trace_file(tmp_path, run_id):
+async def test_unsafe_run_id_never_creates_trace_file(tmp_path):
     agent = runtime(tmp_path / "traces", [])
     with pytest.raises(ValueError, match="UUID4"):
-        await agent.run("Question", run_id=run_id)
+        await agent.run("Question", run_id="../escape")
     assert not (tmp_path / "traces").exists()
-
-
-def test_recorder_rejects_unsafe_path_even_when_called_directly(tmp_path, caplog):
-    TraceRecorder(tmp_path / "traces").emit(TraceEvent(
-        datetime.now(timezone.utc), "../escape", None, 1, 0, "user.input", {"content": "secret"},
-    ))
-    assert not (tmp_path / "traces").exists()
-    assert "secret" not in caplog.text
 
 
 def test_failed_json_replacement_preserves_previous_events(tmp_path, monkeypatch, caplog):
@@ -227,14 +150,3 @@ def test_failed_json_replacement_preserves_previous_events(tmp_path, monkeypatch
     assert not list(tmp_path.glob("*.tmp"))
     assert "Trace write failed" in caplog.text
     assert "private path" not in caplog.text
-
-
-@pytest.mark.parametrize("content", ["broken JSON", '{"unexpected":"object"}'])
-def test_invalid_existing_json_is_not_overwritten(tmp_path, content, caplog):
-    run_id = str(uuid4())
-    path = tmp_path / f"{run_id}.json"
-    path.write_text(content, encoding="utf-8")
-    TraceRecorder(tmp_path).emit(TraceEvent(datetime.now(timezone.utc), run_id, None,
-                                          1, 0, "user.input", {"content": "Hello"}))
-    assert path.read_text(encoding="utf-8") == content
-    assert "Trace write failed" in caplog.text

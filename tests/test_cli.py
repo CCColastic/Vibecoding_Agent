@@ -45,7 +45,7 @@ async def test_new_command_does_not_create_empty_session(tmp_path) -> None:
     status = await run_cli(
         ["new"],
         conversation_manager=conversations,
-        input_fn=input_from("/exit"),
+        input_fn=input_from("   ", "/exit"),
         output_fn=lambda message: None,
     )
 
