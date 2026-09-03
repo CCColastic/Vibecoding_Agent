@@ -66,3 +66,15 @@ compaction_error 或 context_limit_exceeded，ActiveConversation 就不保存任
 使用 FakeLLMClient 和缩小的 ContextPolicy，验证摘要请求、正常请求的顺序，
 工具配对、滚动合并、恢复追问、隔离、持久化及失败路径。默认测试不联网。
 真实运行仍通过已有 DeepSeekClient 调用用户配置的模型。
+
+### LLM 请求的基础重试
+
+按用户确认的规则，在 DeepSeekClient.llm_call 内最多尝试 3 次（首次请求加
+2 次重试），异步等待 1 秒、2 秒。只重试连接错误、SDK 超时、HTTP 429 和
+5xx；参数错误、认证失败、上下文超限、内容不合格和取消操作不重试。
+关闭 AsyncOpenAI 自带重试，避免与外层循环叠加。
+
+普通回答和摘要请求共用该行为。重试耗尽后原样抛出最后的请求异常，继续由
+Runtime 或 ContextCompactor 转成既有错误结果。重试不增加 Agent step、
+不重复追加消息、不重新执行工具；摘要内容不合格依然直接停止，而不是重新生成。
+测试模拟 SDK 请求和异步等待，不实际联网或等待重试间隔。

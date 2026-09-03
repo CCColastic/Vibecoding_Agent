@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import Any
 
 from dotenv import load_dotenv
-from openai import AsyncOpenAI
+from openai import APIConnectionError, APIStatusError, AsyncOpenAI
 
 
 class DeepSeekClient:
@@ -21,6 +22,7 @@ class DeepSeekClient:
         self._client = AsyncOpenAI(
             api_key=os.environ["API_KEY"],
             base_url=os.environ["BASE_URL"],
+            max_retries=0,
         )
 
     async def llm_call(
@@ -38,5 +40,18 @@ class DeepSeekClient:
         if tools:
             request["tools"] = tools
 
-        response = await self._client.chat.completions.create(**request)
+        for attempt in range(3):
+            try:
+                response = await self._client.chat.completions.create(**request)
+                break
+            except (APIConnectionError, APIStatusError) as exc:
+                retryable = (
+                    isinstance(exc, APIConnectionError)
+                    or exc.status_code == 429
+                    or 500 <= exc.status_code < 600
+                )
+                if not retryable or attempt == 2:
+                    raise
+                await asyncio.sleep(2 ** attempt)
+
         return response.choices[0].message.model_dump(exclude_none=True)

@@ -28,6 +28,15 @@ $env:MODEL="deepseek-chat"
 The model adapter calls `load_dotenv()` and reads `API_KEY`, `BASE_URL`, and
 `MODEL`. Shell environment values take precedence over values in `.env`.
 
+Each `DeepSeekClient.llm_call()` makes at most three attempts (the initial request
+plus two retries), with asynchronous waits of 1 and 2 seconds. Only connection
+errors, SDK timeouts, HTTP 429, and HTTP 5xx are retried. Other HTTP errors,
+invalid successful responses, and cancellation are not retried. SDK built-in
+retries are disabled (`max_retries=0`) to avoid multiplying attempts. After the
+last failure, the original exception is passed to the existing Runtime or
+compaction error handler. Both normal and summary requests share this behavior;
+retries do not consume extra Agent steps, append messages, or re-execute tools.
+
 ## Run the CLI
 
 Start a new conversation:
@@ -178,8 +187,10 @@ budget. Summary requests themselves must fit the estimated input budget.
 An invalid/failed summary returns `compaction_error`; an uncompressible context
 returns `context_limit_exceeded`. Both stop the Run without saving any of its
 history or updating the active memory, even if an earlier compaction in the Run
-succeeded. A newly created empty Session may remain. No automatic retry,
-chunking, silent truncation, or over-budget fallback is performed. Ordinary
+succeeded. A newly created empty Session may remain. Invalid summary content is
+not regenerated automatically; transient request failures use the bounded client
+retries described above. No chunking, silent truncation, or over-budget fallback
+is performed. Ordinary
 LLM failures and `max_steps` still save partial Run history as before. Previously
 executed tool side effects cannot be undone by refusing to save messages.
 

@@ -18,9 +18,10 @@ async def test_deepseek_model_loads_env_and_uses_llm_call(monkeypatch) -> None:
             return SimpleNamespace(choices=[SimpleNamespace(message=message)])
 
     class FakeAsyncOpenAI:
-        def __init__(self, *, api_key: str, base_url: str) -> None:
+        def __init__(self, *, api_key: str, base_url: str, max_retries: int) -> None:
             captured["api_key"] = api_key
             captured["base_url"] = base_url
+            captured["max_retries"] = max_retries
             self.chat = SimpleNamespace(completions=FakeCompletions())
 
     monkeypatch.setenv("API_KEY", "test-key")
@@ -36,6 +37,7 @@ async def test_deepseek_model_loads_env_and_uses_llm_call(monkeypatch) -> None:
 
     assert captured["api_key"] == "test-key"
     assert captured["base_url"] == "https://example.test"
+    assert captured["max_retries"] == 0
     assert captured["request"]["model"] == "test-model"
     assert "tools" not in captured["request"]
     assert response == {"role": "assistant", "content": "answer"}
