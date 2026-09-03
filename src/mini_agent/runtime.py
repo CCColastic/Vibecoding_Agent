@@ -6,14 +6,13 @@ from dataclasses import dataclass
 from typing import Any, Sequence
 
 from mini_agent.llm.base import LLMClient
-from mini_agent.models import RunResult, RunState, RunStatus, ToolExecution, ToolResult
+from mini_agent.models import RunResult, RunState, RunStatus, ToolResult
 from mini_agent.tools.registry import ToolRegistry
 
 
 @dataclass(slots=True)
 class AgentRuntime:
     system_prompt: str
-    model: str
     registry: ToolRegistry
     llm_client: LLMClient
     max_steps: int = 8
@@ -33,8 +32,7 @@ class AgentRuntime:
         for step in range(1, self.max_steps + 1):
             state.step = step
             try:
-                assistant_message = await self.llm_client.chat_completion(
-                    model=self.model,
+                assistant_message = await self.llm_client.llm_call(
                     messages=state.messages,
                     tools=self.registry.schemas(),
                 )
@@ -55,7 +53,7 @@ class AgentRuntime:
 
             if tool_calls:
                 for tool_call in tool_calls:
-                    execution = await self._execute_tool_call(tool_call)
+                    execution = await self.registry.execute_tool_call(tool_call)
                     state.tool_executions.append(execution)
                     state.messages.append(
                         {
@@ -103,45 +101,6 @@ class AgentRuntime:
             steps_used=state.step,
             tool_executions=state.tool_executions,
             error=error,
-        )
-
-    async def _execute_tool_call(self, tool_call: Any) -> ToolExecution:
-        call_id = "unknown"
-        name = "unknown"
-        arguments: dict[str, Any] = {}
-        try:
-            if not isinstance(tool_call, dict):
-                raise ValueError("Tool call must be an object")
-            call_id = str(tool_call.get("id") or "unknown")
-            function = tool_call.get("function")
-            if not isinstance(function, dict):
-                raise ValueError("Tool call is missing function data")
-            name = str(function.get("name") or "unknown")
-            raw_arguments = function.get("arguments", "{}")
-            arguments = json.loads(raw_arguments)
-            if not isinstance(arguments, dict):
-                raise ValueError("Tool arguments must be a JSON object")
-
-            arguments = self.registry.validate_arguments(name, arguments)
-            tool = self.registry.get(name)
-            if tool is None:
-                raise ValueError(f"Unknown tool: {name}")
-            result = await tool.execute(**arguments)
-            if not isinstance(result, ToolResult):
-                raise TypeError("Tool must return ToolResult")
-        except (ValueError, TypeError, json.JSONDecodeError) as exc:
-            result = ToolResult(ok=False, content=str(exc))
-        except Exception as exc:
-            result = ToolResult(
-                ok=False,
-                content=f"Tool '{name}' failed: {type(exc).__name__}",
-            )
-
-        return ToolExecution(
-            tool_call_id=call_id,
-            name=name,
-            arguments=arguments,
-            result=result,
         )
 
     @staticmethod

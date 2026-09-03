@@ -1,6 +1,7 @@
 import pytest
 
 from mini_agent.tools import CalculatorTool, SearchTool, ToolRegistry
+from tests.fakes import tool_call
 
 
 def test_registry_returns_deepseek_function_schemas() -> None:
@@ -54,3 +55,32 @@ def test_registry_rejects_unknown_tool() -> None:
 
     with pytest.raises(ValueError, match="Unknown tool"):
         registry.validate_arguments("missing", {})
+
+
+async def test_registry_executes_and_records_tool_call() -> None:
+    registry = ToolRegistry([CalculatorTool()])
+
+    execution = await registry.execute_tool_call(
+        tool_call(
+            "calculator",
+            '{"operation":"multiply","a":6,"b":7}',
+            call_id="calculation-1",
+        )
+    )
+
+    assert execution.tool_call_id == "calculation-1"
+    assert execution.name == "calculator"
+    assert execution.arguments == {"operation": "multiply", "a": 6, "b": 7}
+    assert execution.result.ok is True
+    assert execution.result.content == 42
+
+
+async def test_registry_turns_malformed_call_into_tool_error() -> None:
+    registry = ToolRegistry([CalculatorTool()])
+
+    execution = await registry.execute_tool_call(
+        tool_call("calculator", "not-json")
+    )
+
+    assert execution.result.ok is False
+    assert "Expecting value" in execution.result.content

@@ -61,7 +61,7 @@ async def test_resume_loads_once_then_uses_active_history() -> None:
             {"role": "assistant", "content": "Still Ada"},
         ]
     )
-    runtime = AgentDefinition("Remember", "deepseek-chat", []).create_runtime(
+    runtime = AgentDefinition("Remember", []).create_runtime(
         llm_client=client
     )
     service = SessionService(runtime, store)
@@ -82,7 +82,7 @@ def test_new_conversation_does_not_access_store() -> None:
     now = datetime.now(timezone.utc)
     session = Session("session-1", "owner-a", "Unused", now, now)
     store = CountingStore(session, [])
-    runtime = AgentDefinition("Be helpful", "deepseek-chat", []).create_runtime(
+    runtime = AgentDefinition("Be helpful", []).create_runtime(
         llm_client=FakeLLMClient([])
     )
     service = SessionService(runtime, store)

@@ -11,15 +11,11 @@ from mini_agent.tools import Tool, ToolRegistry
 @dataclass(frozen=True, slots=True)
 class AgentDefinition:
     system_prompt: str
-    model: str
     tools: Sequence[Tool]
 
     def __post_init__(self) -> None:
         if not self.system_prompt.strip():
             raise ValueError("system_prompt must not be empty")
-        if not self.model.strip():
-            raise ValueError("model must not be empty")
-
         frozen_tools = tuple(self.tools)
         seen_names: set[str] = set()
         for tool in frozen_tools:
@@ -41,7 +37,6 @@ class AgentDefinition:
         client = llm_client if llm_client is not None else DeepSeekClient()
         return AgentRuntime(
             system_prompt=self.system_prompt,
-            model=self.model,
             registry=registry,
             llm_client=client,
             max_steps=max_steps,

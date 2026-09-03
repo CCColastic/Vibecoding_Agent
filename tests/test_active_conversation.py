@@ -39,7 +39,7 @@ class RecordingStore:
 
 
 def make_runtime(client: FakeLLMClient):
-    definition = AgentDefinition("Remember context", "deepseek-chat", [CalculatorTool()])
+    definition = AgentDefinition("Remember context", [CalculatorTool()])
     return definition.create_runtime(llm_client=client)
 
 

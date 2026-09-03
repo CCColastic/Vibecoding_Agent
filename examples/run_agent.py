@@ -12,7 +12,6 @@ async def main() -> None:
             "You are a helpful assistant. Use the available tools when useful, "
             "then give the user a concise final answer."
         ),
-        model="deepseek-v4-flash",
         tools=[CalculatorTool(), SearchTool(), WeatherTool()],
     )
     runtime = definition.create_runtime(max_steps=8)

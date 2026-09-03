@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 from typing import Any, Iterable
 
 from pydantic import BaseModel, ValidationError
 
+from mini_agent.models import ToolExecution, ToolResult
 from mini_agent.tools.base import Tool
 
 
@@ -60,3 +62,42 @@ class ToolRegistry:
         except ValidationError as exc:
             raise ValueError(f"Invalid arguments for tool '{name}': {exc}") from exc
         return validated.model_dump()
+
+    async def execute_tool_call(self, tool_call: Any) -> ToolExecution:
+        call_id = "unknown"
+        name = "unknown"
+        arguments: dict[str, Any] = {}
+        try:
+            if not isinstance(tool_call, dict):
+                raise ValueError("Tool call must be an object")
+            call_id = str(tool_call.get("id") or "unknown")
+            function = tool_call.get("function")
+            if not isinstance(function, dict):
+                raise ValueError("Tool call is missing function data")
+            name = str(function.get("name") or "unknown")
+            raw_arguments = function.get("arguments", "{}")
+            arguments = json.loads(raw_arguments)
+            if not isinstance(arguments, dict):
+                raise ValueError("Tool arguments must be a JSON object")
+
+            arguments = self.validate_arguments(name, arguments)
+            tool = self.get(name)
+            if tool is None:
+                raise ValueError(f"Unknown tool: {name}")
+            result = await tool.execute(**arguments)
+            if not isinstance(result, ToolResult):
+                raise TypeError("Tool must return ToolResult")
+        except (ValueError, TypeError, json.JSONDecodeError) as exc:
+            result = ToolResult(ok=False, content=str(exc))
+        except Exception as exc:
+            result = ToolResult(
+                ok=False,
+                content=f"Tool '{name}' failed: {type(exc).__name__}",
+            )
+
+        return ToolExecution(
+            tool_call_id=call_id,
+            name=name,
+            arguments=arguments,
+            result=result,
+        )

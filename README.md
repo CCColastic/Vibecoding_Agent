@@ -17,14 +17,16 @@ python -m venv .venv
 .venv\Scripts\python -m pip install -e ".[dev]"
 ```
 
-Set the API key in your shell:
+Set the model configuration in your shell or `.env` file:
 
 ```powershell
-$env:DEEPSEEK_API_KEY="your-api-key"
+$env:API_KEY="your-api-key"
+$env:BASE_URL="https://api.deepseek.com"
+$env:MODEL="deepseek-chat"
 ```
 
-The library reads the environment variable directly; it does not load `.env`
-files automatically.
+The model adapter calls `load_dotenv()` and reads `API_KEY`, `BASE_URL`, and
+`MODEL`. Shell environment values take precedence over values in `.env`.
 
 ## Run the CLI
 
@@ -63,7 +65,6 @@ from mini_agent.tools import CalculatorTool, SearchTool, WeatherTool
 async def main() -> None:
     definition = AgentDefinition(
         system_prompt="Use tools when useful, then answer clearly.",
-        model="deepseek-chat",
         tools=[CalculatorTool(), SearchTool(), WeatherTool()],
     )
     result = await definition.create_runtime(max_steps=8).run(
@@ -77,9 +78,11 @@ asyncio.run(main())
 
 ## Design
 
-`AgentDefinition` is immutable configuration. The application creates one
-DeepSeek client, one tool registry, and one `AgentRuntime`, then reuses them for
-the whole CLI process. The Runtime never owns Session state.
+`AgentDefinition` is immutable configuration containing only the system prompt
+and tools. Model name and DeepSeek connection settings belong to the model
+adapter and come from the environment. The application creates one DeepSeek
+client, one tool registry, and one `AgentRuntime`, then reuses them for the
+whole CLI process. The Runtime never owns Session state.
 
 For every `run(user_input, context_messages)`, the Runtime creates a temporary
 `RunState`; `steps_used` therefore restarts for every user turn. A response

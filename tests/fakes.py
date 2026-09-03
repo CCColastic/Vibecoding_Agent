@@ -9,16 +9,14 @@ class FakeLLMClient:
         self._responses = iter(responses)
         self.calls: list[dict[str, Any]] = []
 
-    async def chat_completion(
+    async def llm_call(
         self,
         *,
-        model: str,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
     ) -> dict[str, Any]:
         self.calls.append(
             {
-                "model": model,
                 "messages": deepcopy(messages),
                 "tools": deepcopy(tools),
             }
@@ -27,10 +25,9 @@ class FakeLLMClient:
 
 
 class FailingLLMClient:
-    async def chat_completion(
+    async def llm_call(
         self,
         *,
-        model: str,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
     ) -> dict[str, Any]:

@@ -8,7 +8,6 @@ from tests.fakes import FailingLLMClient, FakeLLMClient, tool_call
 def make_definition() -> AgentDefinition:
     return AgentDefinition(
         "Use tools when useful",
-        "deepseek-chat",
         [CalculatorTool(), SearchTool(), WeatherTool()],
     )
 
@@ -200,7 +199,7 @@ async def test_llm_exception_returns_basic_safe_error() -> None:
 
 
 async def test_empty_registry_omits_tools_semantically() -> None:
-    definition = AgentDefinition("Be helpful", "deepseek-chat", [])
+    definition = AgentDefinition("Be helpful", [])
     client = FakeLLMClient([{"role": "assistant", "content": "No tools needed"}])
     runtime = definition.create_runtime(llm_client=client)
 

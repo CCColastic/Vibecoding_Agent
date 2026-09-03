@@ -9,26 +9,25 @@ from tests.fakes import FakeLLMClient
 
 def test_definition_is_immutable_and_freezes_tool_list() -> None:
     source_tools = [CalculatorTool()]
-    definition = AgentDefinition("Be helpful", "deepseek-chat", source_tools)
+    definition = AgentDefinition("Be helpful", source_tools)
     source_tools.append(SearchTool())
 
     assert len(definition.tools) == 1
     assert isinstance(definition.tools, tuple)
     with pytest.raises(FrozenInstanceError):
-        definition.model = "another-model"  # type: ignore[misc]
+        definition.system_prompt = "another prompt"  # type: ignore[misc]
 
 
 def test_duplicate_tool_names_fail_during_definition() -> None:
     with pytest.raises(ValueError, match="Duplicate tool name: calculator"):
         AgentDefinition(
             "Be helpful",
-            "deepseek-chat",
             [CalculatorTool(), CalculatorTool()],
         )
 
 
 def test_create_runtime_builds_independent_registries() -> None:
-    definition = AgentDefinition("Be helpful", "deepseek-chat", [CalculatorTool()])
+    definition = AgentDefinition("Be helpful", [CalculatorTool()])
     client = FakeLLMClient([])
 
     first = definition.create_runtime(llm_client=client)
@@ -39,7 +38,7 @@ def test_create_runtime_builds_independent_registries() -> None:
 
 
 def test_max_steps_must_be_positive() -> None:
-    definition = AgentDefinition("Be helpful", "deepseek-chat", [])
+    definition = AgentDefinition("Be helpful", [])
 
     with pytest.raises(ValueError, match="max_steps"):
         definition.create_runtime(max_steps=0, llm_client=FakeLLMClient([]))

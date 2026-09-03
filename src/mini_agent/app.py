@@ -36,7 +36,6 @@ def build_default_definition() -> AgentDefinition:
             "You are a helpful assistant. Use the available tools when useful, "
             "then give the user a concise final answer."
         ),
-        model=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
         tools=[CalculatorTool(), SearchTool(), WeatherTool()],
     )
 
