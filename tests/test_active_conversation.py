@@ -52,7 +52,13 @@ async def test_new_conversation_is_lazy_and_reuses_memory_history() -> None:
     )
     store = RecordingStore()
     runtime = make_runtime(client)
-    conversation = ActiveConversation("owner-a", None, [], runtime, store)
+    conversation = ActiveConversation(
+        owner_id="owner-a",
+        session_id=None,
+        history=[],
+        runtime=runtime,
+        store=store,
+    )
 
     assert store.created == []
     first = await conversation.send_message("My name is Ada")
@@ -67,8 +73,6 @@ async def test_new_conversation_is_lazy_and_reuses_memory_history() -> None:
         *first.new_messages,
         {"role": "user", "content": "What is my name?"},
     ]
-    assert conversation.history == first.new_messages + second.new_messages
-    assert runtime.llm_client is client
 
 
 async def test_tool_messages_are_available_to_follow_up() -> None:
@@ -89,7 +93,13 @@ async def test_tool_messages_are_available_to_follow_up() -> None:
         ]
     )
     store = RecordingStore()
-    conversation = ActiveConversation("owner-a", None, [], make_runtime(client), store)
+    conversation = ActiveConversation(
+        owner_id="owner-a",
+        session_id=None,
+        history=[],
+        runtime=make_runtime(client),
+        store=store,
+    )
 
     first = await conversation.send_message("Calculate 6 times 7")
     await conversation.send_message("What was the result?")
@@ -100,20 +110,41 @@ async def test_tool_messages_are_available_to_follow_up() -> None:
 
 
 async def test_failed_persistence_does_not_update_memory() -> None:
-    client = FakeLLMClient([{"role": "assistant", "content": "Answer"}])
+    client = FakeLLMClient(
+        [
+            {"role": "assistant", "content": "Answer"},
+            {"role": "assistant", "content": "Retry answer"},
+        ]
+    )
     store = RecordingStore(fail_append=True)
-    conversation = ActiveConversation("owner-a", None, [], make_runtime(client), store)
+    conversation = ActiveConversation(
+        owner_id="owner-a",
+        session_id=None,
+        history=[],
+        runtime=make_runtime(client),
+        store=store,
+    )
 
     with pytest.raises(OSError, match="database unavailable"):
         await conversation.send_message("Question")
 
-    assert conversation.history == []
+    store.fail_append = False
+    await conversation.send_message("Retry")
+
+    assert client.calls[1]["messages"] == [
+        {"role": "system", "content": "Remember context"},
+        {"role": "user", "content": "Retry"},
+    ]
 
 
 async def test_blank_message_is_rejected_without_creating_session() -> None:
     store = RecordingStore()
     conversation = ActiveConversation(
-        "owner-a", None, [], make_runtime(FakeLLMClient([])), store
+        owner_id="owner-a",
+        session_id=None,
+        history=[],
+        runtime=make_runtime(FakeLLMClient([])),
+        store=store,
     )
 
     with pytest.raises(ValueError, match="must not be empty"):

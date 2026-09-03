@@ -27,3 +27,10 @@ class SessionStore(Protocol):
         turn_id: str,
         messages: Sequence[dict[str, Any]],
     ) -> Session: ...
+
+    def replace_history(
+        self,
+        owner_id: str,
+        session_id: str,
+        messages: Sequence[dict[str, Any]],
+    ) -> Session: ...

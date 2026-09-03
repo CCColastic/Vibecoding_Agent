@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Sequence
 
+from mini_agent.context import ContextCompactor, ContextPolicy
 from mini_agent.llm import DeepSeekClient, LLMClient
 from mini_agent.runtime import AgentRuntime
 from mini_agent.tools import Tool, ToolRegistry
@@ -30,6 +31,7 @@ class AgentDefinition:
         *,
         max_steps: int = 8,
         llm_client: LLMClient | None = None,
+        context_policy: ContextPolicy | None = None,
     ) -> AgentRuntime:
         if max_steps < 1:
             raise ValueError("max_steps must be at least 1")
@@ -40,4 +42,8 @@ class AgentDefinition:
             registry=registry,
             llm_client=client,
             max_steps=max_steps,
+            compactor=ContextCompactor(
+                llm_client=client,
+                policy=context_policy if context_policy is not None else ContextPolicy(),
+            ),
         )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
@@ -152,6 +153,50 @@ class SQLiteSessionStore:
             title=row["title"],
             created_at=self._parse_time(row["created_at"]),
             updated_at=now,
+        )
+
+    def replace_history(
+        self,
+        owner_id: str,
+        session_id: str,
+        messages: Sequence[dict[str, Any]],
+    ) -> Session:
+        """Atomically replace this owner's Session history with a new snapshot."""
+        now = self._now()
+        rows_to_insert = []
+        turn_id = str(uuid4())
+        for sequence, message in enumerate(messages, start=1):
+            if message.get("role") == "user" or message.get("_kind") == "context_summary":
+                turn_id = str(uuid4())
+            rows_to_insert.append((
+                session_id, turn_id, sequence,
+                json.dumps(message, ensure_ascii=False), self._serialize_time(now),
+            ))
+
+        # Prepare every payload before acquiring a write lock or deleting anything.
+        with closing(self._connect()) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """SELECT id, owner_id, title, created_at, updated_at
+                   FROM sessions WHERE id = ? AND owner_id = ?""",
+                (session_id, owner_id),
+            ).fetchone()
+            if row is None:
+                raise SessionNotFoundError(f"Session not found: {session_id}")
+            connection.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+            connection.executemany(
+                """INSERT INTO messages
+                   (session_id, turn_id, sequence, payload_json, created_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                rows_to_insert,
+            )
+            connection.execute(
+                "UPDATE sessions SET updated_at = ? WHERE id = ? AND owner_id = ?",
+                (self._serialize_time(now), session_id, owner_id),
+            )
+        return Session(
+            id=row["id"], owner_id=row["owner_id"], title=row["title"],
+            created_at=self._parse_time(row["created_at"]), updated_at=now,
         )
 
     def _initialize(self) -> None:

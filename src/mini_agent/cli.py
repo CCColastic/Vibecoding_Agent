@@ -4,8 +4,12 @@ import argparse
 import asyncio
 from collections.abc import Callable, Sequence
 
-from mini_agent.app import Application, build_application
-from mini_agent.session import ActiveConversation, SessionNotFoundError
+from mini_agent.app import build_conversation_manager
+from mini_agent.session import (
+    ActiveConversation,
+    ConversationManager,
+    SessionNotFoundError,
+)
 
 
 InputFunction = Callable[[str], str]
@@ -49,26 +53,25 @@ async def conversation_loop(
 async def run_cli(
     argv: Sequence[str] | None = None,
     *,
-    application: Application | None = None,
+    conversation_manager: ConversationManager | None = None,
     input_fn: InputFunction = input,
     output_fn: OutputFunction = print,
 ) -> int:
     args = build_parser().parse_args(argv)
     try:
-        app = application or build_application()
+        conversations = conversation_manager or build_conversation_manager()
     except (OSError, ValueError) as exc:
         output_fn(f"Error: {exc}")
         return 1
 
-    owner_id = app.owner.owner_id
     if args.command == "new":
-        conversation = app.session_service.new_conversation(owner_id)
+        conversation = conversations.new_conversation()
         await conversation_loop(
             conversation, input_fn=input_fn, output_fn=output_fn
         )
         return 0
 
-    sessions = app.session_service.list_sessions(owner_id)
+    sessions = conversations.list_sessions()
     if not sessions:
         output_fn("No sessions found.")
         return 0
@@ -89,9 +92,7 @@ async def run_cli(
         return 1
 
     try:
-        conversation = app.session_service.resume_conversation(
-            owner_id, selected.id
-        )
+        conversation = conversations.resume_conversation(selected.id)
     except SessionNotFoundError as exc:
         output_fn(f"Error: {exc}")
         return 1

@@ -86,3 +86,85 @@ def test_append_is_atomic_when_message_is_not_serializable(tmp_path) -> None:
     with sqlite3.connect(database_path) as connection:
         count = connection.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
     assert count == 0
+
+
+def test_replace_rebuilds_only_target_snapshot_and_append_continues(tmp_path):
+    from uuid import UUID
+    from tests.fakes import tool_call
+
+    store = SQLiteSessionStore(tmp_path / "sessions.db")
+    target = store.create_session("owner-a", "Target")
+    other = store.create_session("owner-a", "Other")
+    foreign = store.create_session("owner-b", "Private")
+    for session in (target, other, foreign):
+        store.append_messages(session.owner_id, session.id, "old-turn",
+                              [{"role": "user", "content": "Old"}])
+    snapshot = [
+        {"role": "assistant", "content": "Summary", "_kind": "context_summary"},
+        {"role": "user", "content": "Search"},
+        {"role": "assistant", "content": None,
+         "tool_calls": [tool_call("search", '{"query":"x"}')]},
+        {"role": "tool", "tool_call_id": "call-1", "content": "mock"},
+        {"role": "assistant", "content": "Done"},
+        {"role": "user", "content": "Next"},
+        {"role": "assistant", "content": "Answer"},
+    ]
+    updated = store.replace_history("owner-a", target.id, snapshot)
+    saved = store.load_messages("owner-a", target.id)
+    assert [m.payload for m in saved] == snapshot
+    assert [m.sequence for m in saved] == list(range(1, 8))
+    assert len({m.turn_id for m in saved[1:5]}) == 1
+    assert saved[0].turn_id != saved[1].turn_id != saved[5].turn_id
+    assert saved[5].turn_id == saved[6].turn_id
+    assert all(UUID(m.turn_id).version == 4 for m in saved)
+    assert all(m.created_at == updated.updated_at for m in saved)
+    assert updated.created_at == target.created_at
+    assert (updated.id, updated.title, updated.owner_id) == (target.id, target.title, target.owner_id)
+    assert store.list_sessions("owner-a")[0].id == target.id
+    for session in (other, foreign):
+        assert store.load_messages(session.owner_id, session.id)[0].turn_id == "old-turn"
+    store.append_messages("owner-a", target.id, "next-turn", [{"role": "user", "content": "Again"}])
+    assert store.load_messages("owner-a", target.id)[-1].sequence == 8
+
+
+def test_replace_rejects_foreign_owner_without_deleting(tmp_path):
+    store = SQLiteSessionStore(tmp_path / "sessions.db")
+    session = store.create_session("owner-a", "Private")
+    store.append_messages("owner-a", session.id, "old", [{"role": "user", "content": "Original"}])
+    original = store.load_messages("owner-a", session.id)
+    with pytest.raises(SessionNotFoundError):
+        store.replace_history("owner-b", session.id, [])
+    assert store.load_messages("owner-a", session.id) == original
+
+
+def test_replace_serializes_every_payload_before_deleting(tmp_path):
+    store = SQLiteSessionStore(tmp_path / "sessions.db")
+    session = store.create_session("owner-a", "Keep")
+    store.append_messages("owner-a", session.id, "old", [{"role": "user", "content": "Original"}])
+    original = store.load_messages("owner-a", session.id)
+    with pytest.raises(TypeError):
+        store.replace_history("owner-a", session.id, [
+            {"role": "assistant", "content": "Summary", "_kind": "context_summary"},
+            {"role": "user", "content": object()},
+        ])
+    assert store.load_messages("owner-a", session.id) == original
+
+
+def test_replace_rolls_back_delete_and_partial_inserts_on_database_error(tmp_path):
+    database = tmp_path / "sessions.db"
+    store = SQLiteSessionStore(database)
+    session = store.create_session("owner-a", "Keep")
+    store.append_messages("owner-a", session.id, "old", [{"role": "user", "content": "Original"}])
+    original = store.load_messages("owner-a", session.id)
+    original_session = store.get_session("owner-a", session.id)
+    # A real SQLite error after the first replacement row was inserted.
+    with sqlite3.connect(database) as connection:
+        connection.execute("""CREATE TRIGGER fail_second_insert BEFORE INSERT ON messages
+            WHEN NEW.sequence = 2 BEGIN SELECT RAISE(ABORT, 'test insert failure'); END""")
+    with pytest.raises(sqlite3.IntegrityError, match="test insert failure"):
+        store.replace_history("owner-a", session.id, [
+            {"role": "assistant", "content": "Summary", "_kind": "context_summary"},
+            {"role": "user", "content": "Recent"},
+        ])
+    assert store.load_messages("owner-a", session.id) == original
+    assert store.get_session("owner-a", session.id) == original_session

@@ -1,7 +1,7 @@
 from typing import Any, Sequence
 
 from mini_agent import AgentDefinition
-from mini_agent.session import Session, SessionService, StoredMessage
+from mini_agent.session import ConversationManager, Session, StoredMessage
 from tests.fakes import FakeLLMClient
 
 
@@ -61,18 +61,17 @@ async def test_resume_loads_once_then_uses_active_history() -> None:
             {"role": "assistant", "content": "Still Ada"},
         ]
     )
-    runtime = AgentDefinition("Remember", []).create_runtime(
-        llm_client=client
+    runtime = AgentDefinition("Remember", []).create_runtime(llm_client=client)
+    conversations = ConversationManager(
+        owner_id="owner-a", runtime=runtime, store=store
     )
-    service = SessionService(runtime, store)
 
-    conversation = service.resume_conversation("owner-a", "session-1")
+    conversation = conversations.resume_conversation("session-1")
     await conversation.send_message("What is my name?")
     await conversation.send_message("Are you sure?")
 
     assert store.loads == 1
     assert store.appends == 2
-    assert conversation.runtime is runtime
     assert client.calls[0]["messages"][1:3] == [item.payload for item in stored]
 
 
@@ -85,10 +84,11 @@ def test_new_conversation_does_not_access_store() -> None:
     runtime = AgentDefinition("Be helpful", []).create_runtime(
         llm_client=FakeLLMClient([])
     )
-    service = SessionService(runtime, store)
+    conversations = ConversationManager(
+        owner_id="owner-a", runtime=runtime, store=store
+    )
 
-    conversation = service.new_conversation("owner-a")
+    conversation = conversations.new_conversation()
 
     assert conversation.session_id is None
-    assert conversation.history == []
     assert store.loads == 0

@@ -22,9 +22,10 @@ class ToolExecution:
 @dataclass(slots=True)
 class RunState:
     messages: list[dict[str, Any]]
-    new_messages_start: int
+    new_messages: list[dict[str, Any]] = field(default_factory=list)
     step: int = 0
     tool_executions: list[ToolExecution] = field(default_factory=list)
+    compacted: bool = False
 
 
 RunStatus = Literal[
@@ -32,6 +33,8 @@ RunStatus = Literal[
     "max_steps_exceeded",
     "llm_error",
     "llm_protocol_error",
+    "compaction_error",
+    "context_limit_exceeded",
 ]
 
 
@@ -44,3 +47,4 @@ class RunResult:
     steps_used: int
     tool_executions: list[ToolExecution]
     error: str | None = None
+    compacted: bool = False

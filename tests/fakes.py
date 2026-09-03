@@ -5,7 +5,7 @@ from typing import Any
 
 
 class FakeLLMClient:
-    def __init__(self, responses: list[dict[str, Any]]) -> None:
+    def __init__(self, responses: list[Any]) -> None:
         self._responses = iter(responses)
         self.calls: list[dict[str, Any]] = []
 
@@ -21,7 +21,10 @@ class FakeLLMClient:
                 "tools": deepcopy(tools),
             }
         )
-        return next(self._responses)
+        response = next(self._responses)
+        if isinstance(response, Exception):
+            raise response
+        return response
 
 
 class FailingLLMClient:
