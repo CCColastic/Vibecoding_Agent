@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Sequence
 
 from mini_agent.llm.base import LLMClient
-from mini_agent.models import RunResult, ToolExecution, ToolResult
+from mini_agent.models import RunResult, RunState, RunStatus, ToolExecution, ToolResult
 from mini_agent.tools.registry import ToolRegistry
 
 
@@ -17,27 +18,31 @@ class AgentRuntime:
     llm_client: LLMClient
     max_steps: int = 8
 
-    async def run(self, user_input: str) -> RunResult:
+    async def run(
+        self,
+        user_input: str,
+        context_messages: Sequence[dict[str, Any]] = (),
+    ) -> RunResult:
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": user_input},
+            *deepcopy(list(context_messages)),
         ]
-        executions: list[ToolExecution] = []
+        state = RunState(messages=messages, new_messages_start=len(messages))
+        state.messages.append({"role": "user", "content": user_input})
 
         for step in range(1, self.max_steps + 1):
+            state.step = step
             try:
                 assistant_message = await self.llm_client.chat_completion(
                     model=self.model,
-                    messages=messages,
+                    messages=state.messages,
                     tools=self.registry.schemas(),
                 )
             except Exception as exc:
-                return RunResult(
+                return self._result(
+                    state,
                     status="llm_error",
                     final_answer=None,
-                    messages=messages,
-                    steps_used=step,
-                    tool_executions=executions,
                     error=f"LLM request failed: {type(exc).__name__}",
                 )
 
@@ -46,13 +51,13 @@ class AgentRuntime:
             stored_assistant = {"role": "assistant", "content": content}
             if tool_calls:
                 stored_assistant["tool_calls"] = tool_calls
-            messages.append(stored_assistant)
+            state.messages.append(stored_assistant)
 
             if tool_calls:
                 for tool_call in tool_calls:
                     execution = await self._execute_tool_call(tool_call)
-                    executions.append(execution)
-                    messages.append(
+                    state.tool_executions.append(execution)
+                    state.messages.append(
                         {
                             "role": "tool",
                             "tool_call_id": execution.tool_call_id,
@@ -62,30 +67,42 @@ class AgentRuntime:
                 continue
 
             if isinstance(content, str) and content.strip():
-                return RunResult(
+                return self._result(
+                    state,
                     status="completed",
                     final_answer=content,
-                    messages=messages,
-                    steps_used=step,
-                    tool_executions=executions,
                 )
 
-            return RunResult(
+            return self._result(
+                state,
                 status="llm_protocol_error",
                 final_answer=None,
-                messages=messages,
-                steps_used=step,
-                tool_executions=executions,
                 error="LLM response contained neither text nor tool calls",
             )
 
-        return RunResult(
+        return self._result(
+            state,
             status="max_steps_exceeded",
             final_answer=None,
-            messages=messages,
-            steps_used=self.max_steps,
-            tool_executions=executions,
             error=f"Agent reached max_steps={self.max_steps}",
+        )
+
+    @staticmethod
+    def _result(
+        state: RunState,
+        *,
+        status: RunStatus,
+        final_answer: str | None,
+        error: str | None = None,
+    ) -> RunResult:
+        return RunResult(
+            status=status,
+            final_answer=final_answer,
+            messages=state.messages,
+            new_messages=state.messages[state.new_messages_start :],
+            steps_used=state.step,
+            tool_executions=state.tool_executions,
+            error=error,
         )
 
     async def _execute_tool_call(self, tool_call: Any) -> ToolExecution:

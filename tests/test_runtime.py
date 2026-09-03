@@ -23,10 +23,56 @@ async def test_runtime_returns_direct_answer() -> None:
     assert result.final_answer == "Hello"
     assert result.steps_used == 1
     assert result.tool_executions == []
+    assert result.new_messages == [
+        {"role": "user", "content": "Hi"},
+        {"role": "assistant", "content": "Hello"},
+    ]
     assert client.calls[0]["messages"] == [
         {"role": "system", "content": "Use tools when useful"},
         {"role": "user", "content": "Hi"},
     ]
+
+
+async def test_runtime_uses_context_without_mutating_it() -> None:
+    history = [
+        {"role": "user", "content": "My name is Ada"},
+        {"role": "assistant", "content": "Nice to meet you"},
+    ]
+    client = FakeLLMClient([{"role": "assistant", "content": "Your name is Ada"}])
+    runtime = make_definition().create_runtime(llm_client=client)
+
+    result = await runtime.run("What is my name?", context_messages=history)
+
+    assert client.calls[0]["messages"] == [
+        {"role": "system", "content": "Use tools when useful"},
+        *history,
+        {"role": "user", "content": "What is my name?"},
+    ]
+    assert result.new_messages == [
+        {"role": "user", "content": "What is my name?"},
+        {"role": "assistant", "content": "Your name is Ada"},
+    ]
+    assert history == [
+        {"role": "user", "content": "My name is Ada"},
+        {"role": "assistant", "content": "Nice to meet you"},
+    ]
+
+
+async def test_reused_runtime_resets_run_state_each_turn() -> None:
+    client = FakeLLMClient(
+        [
+            {"role": "assistant", "content": "First"},
+            {"role": "assistant", "content": "Second"},
+        ]
+    )
+    runtime = make_definition().create_runtime(llm_client=client)
+
+    first = await runtime.run("One")
+    second = await runtime.run("Two", context_messages=first.new_messages)
+
+    assert first.steps_used == 1
+    assert second.steps_used == 1
+    assert runtime.llm_client is client
 
 
 async def test_runtime_executes_tool_then_returns_answer() -> None:
