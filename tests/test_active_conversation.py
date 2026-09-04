@@ -6,7 +6,8 @@ import pytest
 from mini_agent import AgentDefinition
 from mini_agent.session import ActiveConversation, Session
 from mini_agent.tools import CalculatorTool
-from tests.fakes import FakeLLMClient, message_payloads, tool_call
+from mini_agent.runtime_config import RuntimeConfig
+from tests.fakes import FakeLLMClient, llm_response, message_payloads, tool_call
 
 
 class RecordingStore:
@@ -121,3 +122,30 @@ async def test_blank_message_is_rejected_without_creating_session() -> None:
         await conversation.send_message("   ")
 
     assert store.created == []
+
+
+async def test_budget_stop_saves_only_completed_run_messages() -> None:
+    call = tool_call(
+        "calculator", '{"operation":"add","a":1,"b":2}'
+    )
+    client = FakeLLMClient([
+        llm_response(
+            {"content": None, "tool_calls": [call]},
+            prompt_tokens=90,
+            completion_tokens=10,
+        )
+    ])
+    runtime = AgentDefinition("Use tools", [CalculatorTool()]).create_runtime(
+        llm_client=client,
+        runtime_config=RuntimeConfig(max_chat_usage=100),
+    )
+    store = RecordingStore()
+    conversation = ActiveConversation(
+        owner_id="owner-a", session_id=None, history=[],
+        runtime=runtime, store=store,
+    )
+    result = await conversation.send_message("Calculate")
+    assert result.status == "token_budget_exceeded"
+    assert message_payloads(store.appended[0]) == [
+        {"role": "user", "content": "Calculate"}
+    ]

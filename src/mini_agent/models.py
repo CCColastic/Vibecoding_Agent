@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from mini_agent.llm.run import RunUsage
+
 
 @dataclass(frozen=True, slots=True)
 class ToolResult:
@@ -29,6 +31,7 @@ class RunState:
     step: int = 0
     tool_executions: list[ToolExecution] = field(default_factory=list)
     compacted: bool = False
+    usage: RunUsage = field(default_factory=RunUsage)
 
 
 RunStatus = Literal[
@@ -38,6 +41,8 @@ RunStatus = Literal[
     "llm_protocol_error",
     "compaction_error",
     "context_limit_exceeded",
+    "token_budget_exceeded",
+    "output_truncated",
 ]
 
 
@@ -52,3 +57,7 @@ class RunResult:
     run_id: str
     error: str | None = None
     compacted: bool = False
+    chat_token_usage: int = 0
+    compaction_token_usage: int = 0
+    token_usage: int = 0
+    usage_complete: bool = True

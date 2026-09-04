@@ -4,6 +4,7 @@ import pytest
 
 from mini_agent import AgentDefinition, ContextPolicy
 from mini_agent.session import ConversationManager, SQLiteSessionStore
+from mini_agent.runtime_config import RuntimeConfig
 from tests.fakes import FakeLLMClient, tool_call
 
 
@@ -43,7 +44,7 @@ def setup_conversation(tmp_path, responses, *, max_steps=8):
     history = [{**message, "_run_id": "old"} for message in history]
     client = FakeLLMClient(responses)
     runtime = AgentDefinition("Remember", []).create_runtime(
-        llm_client=client, max_steps=max_steps,
+        llm_client=client, runtime_config=RuntimeConfig(max_steps=max_steps),
         context_policy=ContextPolicy(
             context_limit=2000, max_summary_chars=120, output_reserve=200,
             keep_recent_turns=1,

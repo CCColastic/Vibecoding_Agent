@@ -7,7 +7,7 @@ import pytest
 
 from mini_agent import AgentDefinition, ToolResult, TraceEvent, TraceRecorder
 from mini_agent.tools import CalculatorTool
-from tests.fakes import FakeLLMClient, tool_call
+from tests.fakes import FakeLLMClient, llm_response, tool_call
 
 
 def events(directory, run_id):
@@ -36,7 +36,8 @@ async def test_trace_records_inputs_outputs_tools_and_one_end(tmp_path):
     assert all(e["run_id"] == result.run_id and e["session_id"] == "session-a" for e in trace)
     assert all(datetime.fromisoformat(e["timestamp"]).utcoffset().total_seconds() == 0 for e in trace)
     assert trace[0]["data"] == {"content": "计算 6 × 7"}
-    assert trace[1]["data"] == {"content": None, "tool_calls": [call]}
+    assert trace[1]["data"]["content"] is None
+    assert trace[1]["data"]["tool_calls"] == [call]
     assert trace[2]["data"]["raw_arguments"] == call["function"]["arguments"]
     assert trace[3]["data"]["tool_call_id"] == trace[2]["data"]["tool_call_id"]
     assert trace[3]["data"]["result"] == {"ok": True, "content": 42}
@@ -84,7 +85,7 @@ async def test_concurrent_runs_use_separate_files_and_sequences(tmp_path, monkey
 
     async def respond(**kwargs):
         await asyncio.sleep(0)
-        return {"content": "Answer"}
+        return llm_response({"content": "Answer"})
 
     monkeypatch.setattr(agent.llm_client, "llm_call", respond)
     results = await asyncio.gather(agent.run("A", session_id="a"), agent.run("B", session_id="b"))

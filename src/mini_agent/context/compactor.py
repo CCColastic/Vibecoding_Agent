@@ -10,7 +10,7 @@ from mini_agent.context.models import (
     ContextPolicy,
     PreparedContext,
 )
-from mini_agent.llm.base import LLMClient
+from mini_agent.llm.run import RunLLM, TokenBudgetExceeded
 
 logger = logging.getLogger(__name__)
 
@@ -50,8 +50,7 @@ def estimate_tokens(
 
 
 class ContextCompactor:
-    def __init__(self, *, llm_client: LLMClient, policy: ContextPolicy) -> None:
-        self.llm_client = llm_client
+    def __init__(self, *, policy: ContextPolicy) -> None:
         self.policy = policy
         self._threshold = policy.context_limit * policy.trigger_ratio
         self._input_budget = policy.context_limit - policy.output_reserve
@@ -63,6 +62,7 @@ class ContextCompactor:
         current_messages: Sequence[dict[str, Any]],
         system_prompt: str,
         tools: list[dict[str, Any]],
+        run_llm: RunLLM,
     ) -> PreparedContext:
         """Return effective history; current_messages is its protected Run suffix.
 
@@ -81,6 +81,7 @@ class ContextCompactor:
                 system_prompt=system_prompt,
                 tools=tools,
                 before=before,
+                run_llm=run_llm,
             )
         except (CompactionError, ContextLimitExceeded) as exc:
             logger.warning("context_compaction_failed error_type=%s", type(exc).__name__)
@@ -95,6 +96,7 @@ class ContextCompactor:
         system_prompt: str,
         tools: list[dict[str, Any]],
         before: float,
+        run_llm: RunLLM,
     ) -> PreparedContext:
         history = list(messages[: len(messages) - len(current_messages)])
         previous_summary: list[dict[str, Any]] = []
@@ -133,12 +135,18 @@ class ContextCompactor:
         if estimate_tokens(summary_request, []) > self._input_budget:
             raise ContextLimitExceeded("Summary request exceeds the estimated input budget")
         try:
-            response = await self.llm_client.llm_call(messages=summary_request, tools=[])
+            response = await run_llm.call(
+                purpose="compaction", messages=summary_request, tools=[]
+            )
+        except TokenBudgetExceeded:
+            raise
         except Exception as exc:
             raise CompactionError(f"Summary request failed: {type(exc).__name__}") from None
 
-        content = response.get("content") if isinstance(response, dict) else None
-        if not isinstance(content, str) or not content.strip() or response.get("tool_calls"):
+        content = response.message.get("content")
+        if response.finish_reason == "length":
+            raise CompactionError("Summary response was truncated")
+        if not isinstance(content, str) or not content.strip() or response.message.get("tool_calls"):
             raise CompactionError("Summary response must contain non-empty text and no tool calls")
         if len(content) > self.policy.max_summary_chars:
             raise CompactionError("Summary exceeds max_summary_chars")

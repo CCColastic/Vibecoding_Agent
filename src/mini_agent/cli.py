@@ -49,6 +49,12 @@ async def conversation_loop(
         if was_new:
             output_fn(f"Session: {conversation.session_id}")
         output_fn(f"Run: {result.run_id}")
+        usage_suffix = " (incomplete)" if not result.usage_complete else ""
+        output_fn(
+            f"Token usage: {result.token_usage} "
+            f"(chat={result.chat_token_usage}, "
+            f"compaction={result.compaction_token_usage}){usage_suffix}"
+        )
         output_fn(f"Agent: {result.final_answer or result.error}")
 
 

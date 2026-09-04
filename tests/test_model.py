@@ -15,7 +15,10 @@ async def test_deepseek_model_loads_env_and_uses_llm_call(monkeypatch) -> None:
                     "content": "answer",
                 }
             )
-            return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=message, finish_reason="stop")],
+                usage=None,
+            )
 
     class FakeAsyncOpenAI:
         def __init__(self, *, api_key: str, base_url: str, max_retries: int) -> None:
@@ -31,6 +34,7 @@ async def test_deepseek_model_loads_env_and_uses_llm_call(monkeypatch) -> None:
 
     client = model_module.DeepSeekClient()
     response = await client.llm_call(
+        purpose="chat",
         messages=[{"role": "user", "content": "hello"}],
         tools=[],
     )
@@ -40,4 +44,5 @@ async def test_deepseek_model_loads_env_and_uses_llm_call(monkeypatch) -> None:
     assert captured["max_retries"] == 0
     assert captured["request"]["model"] == "test-model"
     assert "tools" not in captured["request"]
-    assert response == {"role": "assistant", "content": "answer"}
+    assert response.message == {"role": "assistant", "content": "answer"}
+    assert response.usage is None

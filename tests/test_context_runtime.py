@@ -4,6 +4,7 @@ from copy import deepcopy
 from mini_agent import AgentDefinition, ContextPolicy, ToolResult
 from mini_agent.context.compactor import estimate_tokens, request_messages
 from mini_agent.tools import SearchTool
+from mini_agent.runtime_config import RuntimeConfig
 from tests.fakes import FakeLLMClient, message_payloads, tool_call
 
 
@@ -32,7 +33,8 @@ async def test_runtime_compaction_separates_effective_history_and_new_messages()
         {"content": "Follow up answer"},
     ])
     runtime = AgentDefinition("Remember", []).create_runtime(
-        llm_client=client, context_policy=small_policy(), max_steps=1,
+        llm_client=client, context_policy=small_policy(),
+        runtime_config=RuntimeConfig(max_steps=1),
     )
     compactor = runtime.compactor
     result = await runtime.run("Question", source)
@@ -52,7 +54,7 @@ async def test_runtime_compaction_separates_effective_history_and_new_messages()
     assert follow_up.steps_used == 1
     assert not follow_up.compacted
     assert runtime.compactor is compactor
-    assert compactor.llm_client is runtime.llm_client is client
+    assert runtime.llm_client is client
     assert client.calls[-1]["messages"][1]["content"] == result.messages[0]["content"]
 
 
@@ -73,7 +75,10 @@ async def test_tool_growth_triggers_check_before_next_llm_call(monkeypatch):
             "tool_calls": [tool_call("search", '{"query":"hello"}')]}
     responses = [call, {"content": "Summary"}, {"content": "Done"}]
     client = FakeLLMClient(responses)
-    runtime = definition.create_runtime(llm_client=client, context_policy=config, max_steps=2)
+    runtime = definition.create_runtime(
+        llm_client=client, context_policy=config,
+        runtime_config=RuntimeConfig(max_steps=2),
+    )
     result = await runtime.run(current["content"], source)
     assert result.steps_used == 2
     assert result.status == "completed"

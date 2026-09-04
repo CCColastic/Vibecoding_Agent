@@ -12,7 +12,8 @@ from uuid import UUID, uuid4
 logger = logging.getLogger(__name__)
 
 TraceEventType = Literal[
-    "user.input", "assistant.output", "tool.start", "tool.end", "run.end",
+    "user.input", "assistant.output", "context.compacted",
+    "tool.start", "tool.end", "run.end",
 ]
 
 
@@ -37,6 +38,10 @@ class TraceEvent:
     step: int
     event: TraceEventType
     data: dict[str, Any]
+    chat_token_usage: int = 0
+    compaction_token_usage: int = 0
+    token_usage: int = 0
+    usage_complete: bool = True
 
 
 class TraceRecorder:
@@ -57,6 +62,10 @@ class TraceRecorder:
                 "step": event.step,
                 "event": event.event,
                 "data": event.data,
+                "chat_token_usage": event.chat_token_usage,
+                "compaction_token_usage": event.compaction_token_usage,
+                "token_usage": event.token_usage,
+                "usage_complete": event.usage_complete,
             }
             destination = self.directory / f"{run_id}.json"
             events = json.loads(destination.read_text(encoding="utf-8")) if destination.exists() else []

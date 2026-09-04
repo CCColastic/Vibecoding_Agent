@@ -17,7 +17,9 @@ from mini_agent.context import (
 )
 from mini_agent.context.compactor import request_messages
 from mini_agent.llm.base import LLMClient
+from mini_agent.llm.run import RunLLM, TokenBudgetExceeded
 from mini_agent.models import RunResult, RunState, RunStatus, ToolExecution, ToolResult
+from mini_agent.runtime_config import RuntimeConfig
 from mini_agent.tools.registry import ToolRegistry
 from mini_agent.trace import TraceEvent, TraceEventType, TraceRecorder, resolve_run_id
 
@@ -29,15 +31,13 @@ class AgentRuntime:
     system_prompt: str
     registry: ToolRegistry
     llm_client: LLMClient
-    max_steps: int = 8
+    config: RuntimeConfig = RuntimeConfig()
     compactor: ContextCompactor | None = None
     trace_recorder: TraceRecorder | None = None
 
     def __post_init__(self) -> None:
         if self.compactor is None:
-            self.compactor = ContextCompactor(
-                llm_client=self.llm_client, policy=ContextPolicy()
-            )
+            self.compactor = ContextCompactor(policy=ContextPolicy())
 
     async def run(
         self,
@@ -51,13 +51,16 @@ class AgentRuntime:
             messages=deepcopy(list(context_messages)),
             run_id=resolve_run_id(run_id), session_id=session_id,
         )
+        run_llm = RunLLM(
+            client=self.llm_client, config=self.config, usage=state.usage
+        )
         started = perf_counter()
         status = "unhandled_error"
         error = None
         try:
             self._append_message(state, {"role": "user", "content": user_input})
             self._emit(state, "user.input", {"content": user_input})
-            result = await self._run_loop(state)
+            result = await self._run_loop(state, run_llm)
             status, error = result.status, result.error
             return result
         except asyncio.CancelledError:
@@ -72,17 +75,19 @@ class AgentRuntime:
                 "duration_ms": (perf_counter() - started) * 1000,
             })
 
-    async def _run_loop(self, state: RunState) -> RunResult:
+    async def _run_loop(self, state: RunState, run_llm: RunLLM) -> RunResult:
         tools = self.registry.schemas()
 
-        for step in range(1, self.max_steps + 1):
+        for step in range(1, self.config.max_steps + 1):
             try:
+                run_llm.ensure_available("chat")
                 assert self.compactor is not None
                 prepared = await self.compactor.prepare(
                     messages=state.messages,
                     current_messages=state.new_messages,
                     system_prompt=self.system_prompt,
                     tools=tools,
+                    run_llm=run_llm,
                 )
             except CompactionError as exc:
                 return self._result(
@@ -92,15 +97,35 @@ class AgentRuntime:
                 return self._result(
                     state, status="context_limit_exceeded", final_answer=None, error=str(exc)
                 )
+            except TokenBudgetExceeded as exc:
+                return self._result(
+                    state, status="token_budget_exceeded", final_answer=None,
+                    error=str(exc),
+                )
             state.messages = prepared.messages
             if prepared.compacted:
                 state.messages[0] = {**state.messages[0], "_run_id": state.run_id}
+                self._emit(
+                    state,
+                    "context.compacted",
+                    self._response_data(
+                        state.usage.last_usage,
+                        state.usage.last_finish_reason,
+                        purpose="compaction",
+                    ),
+                )
             state.compacted = state.compacted or prepared.compacted
-            state.step = step
             try:
-                assistant_message = await self.llm_client.llm_call(
+                response = await run_llm.call(
+                    purpose="chat",
                     messages=request_messages(self.system_prompt, state.messages),
                     tools=tools,
+                )
+                state.step = step
+            except TokenBudgetExceeded as exc:
+                return self._result(
+                    state, status="token_budget_exceeded", final_answer=None,
+                    error=str(exc),
                 )
             except Exception as exc:
                 return self._result(
@@ -110,6 +135,7 @@ class AgentRuntime:
                     error=f"LLM request failed: {type(exc).__name__}",
                 )
 
+            assistant_message = response.message
             if not isinstance(assistant_message, dict):
                 return self._result(
                     state, status="llm_protocol_error", final_answer=None,
@@ -117,9 +143,29 @@ class AgentRuntime:
                 )
             content = assistant_message.get("content")
             tool_calls = assistant_message.get("tool_calls") or []
-            self._emit(state, "assistant.output", {"content": content, "tool_calls": tool_calls})
+            self._emit(
+                state,
+                "assistant.output",
+                {
+                    "content": content,
+                    "tool_calls": tool_calls,
+                    **self._response_data(
+                        response.usage, response.finish_reason, purpose="chat"
+                    ),
+                },
+            )
+            if response.finish_reason == "length":
+                return self._result(
+                    state, status="output_truncated", final_answer=None,
+                    error="LLM output was truncated by max_tokens",
+                )
             stored_assistant = {"role": "assistant", "content": content}
             if tool_calls:
+                if run_llm.exhausted("chat"):
+                    return self._result(
+                        state, status="token_budget_exceeded", final_answer=None,
+                        error=run_llm.budget_error("chat"),
+                    )
                 stored_assistant["tool_calls"] = tool_calls
                 self._append_message(state, stored_assistant)
                 for tool_call in tool_calls:
@@ -154,7 +200,7 @@ class AgentRuntime:
             state,
             status="max_steps_exceeded",
             final_answer=None,
-            error=f"Agent reached max_steps={self.max_steps}",
+            error=f"Agent reached max_steps={self.config.max_steps}",
         )
 
     @staticmethod
@@ -172,6 +218,10 @@ class AgentRuntime:
                 timestamp=datetime.now(timezone.utc), run_id=state.run_id,
                 session_id=state.session_id, sequence=state.trace_sequence,
                 step=state.step, event=event, data=data,
+                chat_token_usage=state.usage.chat_tokens,
+                compaction_token_usage=state.usage.compaction_tokens,
+                token_usage=state.usage.total_tokens,
+                usage_complete=state.usage.complete,
             ))
         except Exception as exc:
             logger.warning("Trace recorder failed: %s", type(exc).__name__)
@@ -225,7 +275,25 @@ class AgentRuntime:
             run_id=state.run_id,
             error=error,
             compacted=state.compacted,
+            chat_token_usage=state.usage.chat_tokens,
+            compaction_token_usage=state.usage.compaction_tokens,
+            token_usage=state.usage.total_tokens,
+            usage_complete=state.usage.complete,
         )
+
+    @staticmethod
+    def _response_data(usage, finish_reason, *, purpose: str) -> dict[str, Any]:
+        payload = None if usage is None else {
+            "prompt_tokens": usage.prompt_tokens,
+            "completion_tokens": usage.completion_tokens,
+            "total_tokens": usage.total_tokens,
+        }
+        return {
+            "purpose": purpose,
+            "usage": payload,
+            "finish_reason": finish_reason,
+            "usage_unavailable": usage is None,
+        }
 
     @staticmethod
     def _tool_content(result: ToolResult) -> str:

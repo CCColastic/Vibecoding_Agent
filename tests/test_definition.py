@@ -5,6 +5,7 @@ import pytest
 from mini_agent import AgentDefinition
 from mini_agent.tools import CalculatorTool, SearchTool
 from tests.fakes import FakeLLMClient
+from mini_agent.runtime_config import RuntimeConfig
 
 
 def test_definition_is_immutable_and_freezes_tool_list() -> None:
@@ -30,4 +31,4 @@ def test_max_steps_must_be_positive() -> None:
     definition = AgentDefinition("Be helpful", [])
 
     with pytest.raises(ValueError, match="max_steps"):
-        definition.create_runtime(max_steps=0, llm_client=FakeLLMClient([]))
+        RuntimeConfig(max_steps=0)

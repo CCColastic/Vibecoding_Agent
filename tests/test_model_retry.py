@@ -9,11 +9,14 @@ from openai import APIConnectionError, APIStatusError, APITimeoutError
 
 import mini_agent.llm.model as model_module
 from mini_agent import AgentDefinition, ContextPolicy
+from mini_agent.runtime_config import RuntimeConfig
 
 
 def response(content="Answer"):
     message = SimpleNamespace(model_dump=lambda **kwargs: {"role": "assistant", "content": content})
-    return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=message, finish_reason="stop")], usage=None
+    )
 
 
 def request_error(kind):
@@ -57,8 +60,8 @@ async def test_transient_failure_retries_same_request_without_mutating_inputs(ma
     messages = [{"role": "user", "content": "Hi"}]
     tools = [{"type": "function", "function": {"name": "test", "parameters": {}}}]
     original = deepcopy((messages, tools))
-    result = await client.llm_call(messages=messages, tools=tools)
-    assert result["content"] == "Answer"
+    result = await client.llm_call(purpose="chat", messages=messages, tools=tools)
+    assert result.message["content"] == "Answer"
     assert create.await_count == 3
     assert create.await_args_list[0] == create.await_args_list[1] == create.await_args_list[2]
     assert sleep.await_args_list == [call(1), call(2)]
@@ -69,7 +72,7 @@ async def test_exhaustion_reraises_last_error_without_fourth_attempt_or_final_sl
     errors = [request_error(503) for _ in range(3)]
     client, create, sleep = make_client(errors)
     with pytest.raises(APIStatusError) as raised:
-        await client.llm_call(messages=[], tools=[])
+        await client.llm_call(purpose="chat", messages=[], tools=[])
     assert raised.value is errors[-1]
     assert create.await_count == 3
     assert sleep.await_args_list == [call(1), call(2)]
@@ -80,7 +83,7 @@ async def test_nonretryable_http_errors_fail_immediately(make_client, status):
     error = request_error(status)
     client, create, sleep = make_client([error])
     with pytest.raises(APIStatusError) as raised:
-        await client.llm_call(messages=[], tools=[])
+        await client.llm_call(purpose="chat", messages=[], tools=[])
     assert raised.value is error
     assert create.await_count == 1
     sleep.assert_not_awaited()
@@ -89,7 +92,7 @@ async def test_nonretryable_http_errors_fail_immediately(make_client, status):
 async def test_cancellation_is_not_retried(make_client):
     client, create, sleep = make_client([asyncio.CancelledError()])
     with pytest.raises(asyncio.CancelledError):
-        await client.llm_call(messages=[], tools=[])
+        await client.llm_call(purpose="chat", messages=[], tools=[])
     assert create.await_count == 1
     sleep.assert_not_awaited()
 
@@ -99,7 +102,7 @@ async def test_summary_request_also_retries_through_shared_client(make_client):
         request_error("timeout"), response("Summary"), response("Answer"),
     ])
     runtime = AgentDefinition("Answer clearly", []).create_runtime(
-        llm_client=client, max_steps=1,
+        llm_client=client, runtime_config=RuntimeConfig(max_steps=1),
         context_policy=ContextPolicy(context_limit=2500, trigger_ratio=0.6,
                                      max_summary_chars=100, output_reserve=100),
     )

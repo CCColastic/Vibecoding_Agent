@@ -4,6 +4,7 @@ import asyncio
 
 from mini_agent import AgentDefinition
 from mini_agent.tools import CalculatorTool, SearchTool, WeatherTool
+from mini_agent.runtime_config import RuntimeConfig
 
 
 async def main() -> None:
@@ -14,7 +15,7 @@ async def main() -> None:
         ),
         tools=[CalculatorTool(), SearchTool(), WeatherTool()],
     )
-    runtime = definition.create_runtime(max_steps=8)
+    runtime = definition.create_runtime(runtime_config=RuntimeConfig(max_steps=8))
     result = await runtime.run("Calculate 12 multiplied by 7.")
     print(result.final_answer or f"{result.status}: {result.error}")
 

@@ -3,6 +3,7 @@ import json
 from mini_agent import AgentDefinition
 from mini_agent.tools import CalculatorTool, SearchTool, WeatherTool
 from tests.fakes import FailingLLMClient, FakeLLMClient, message_payloads, tool_call
+from mini_agent.runtime_config import RuntimeConfig
 
 
 def make_definition() -> AgentDefinition:
@@ -101,7 +102,9 @@ async def test_runtime_stops_at_max_steps() -> None:
             },
         ]
     )
-    runtime = make_definition().create_runtime(max_steps=2, llm_client=client)
+    runtime = make_definition().create_runtime(
+        runtime_config=RuntimeConfig(max_steps=2), llm_client=client
+    )
 
     result = await runtime.run("Keep searching")
 

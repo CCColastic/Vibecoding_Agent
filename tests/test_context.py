@@ -7,6 +7,8 @@ from mini_agent.context import (
     CompactionError, ContextCompactor, ContextLimitExceeded, ContextPolicy,
 )
 from mini_agent.context.compactor import estimate_tokens, request_messages
+from mini_agent.llm.run import RunLLM, RunUsage
+from mini_agent.runtime_config import RuntimeConfig
 from tests.fakes import FakeLLMClient, tool_call
 
 
@@ -29,9 +31,10 @@ def policy(**overrides):
 
 async def prepare(client, messages, *, current=None, config=None):
     current = current if current is not None else [{"role": "user", "content": "Follow up"}]
-    return await ContextCompactor(llm_client=client, policy=config or policy()).prepare(
+    return await ContextCompactor(policy=config or policy()).prepare(
         messages=[*messages, *current], current_messages=current,
         system_prompt="Remember facts", tools=[],
+        run_llm=RunLLM(client=client, config=RuntimeConfig(), usage=RunUsage()),
     )
 
 

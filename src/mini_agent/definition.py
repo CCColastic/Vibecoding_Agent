@@ -6,6 +6,7 @@ from typing import Sequence
 from mini_agent.context import ContextCompactor, ContextPolicy
 from mini_agent.llm import DeepSeekClient, LLMClient
 from mini_agent.runtime import AgentRuntime
+from mini_agent.runtime_config import RuntimeConfig
 from mini_agent.tools import Tool, ToolRegistry
 from mini_agent.trace import TraceRecorder
 
@@ -30,23 +31,20 @@ class AgentDefinition:
     def create_runtime(
         self,
         *,
-        max_steps: int = 8,
         llm_client: LLMClient | None = None,
+        runtime_config: RuntimeConfig | None = None,
         context_policy: ContextPolicy | None = None,
         trace_recorder: TraceRecorder | None = None,
     ) -> AgentRuntime:
-        if max_steps < 1:
-            raise ValueError("max_steps must be at least 1")
         registry = ToolRegistry(self.tools)
         client = llm_client if llm_client is not None else DeepSeekClient()
         return AgentRuntime(
             system_prompt=self.system_prompt,
             registry=registry,
             llm_client=client,
-            max_steps=max_steps,
+            config=runtime_config if runtime_config is not None else RuntimeConfig(),
             trace_recorder=trace_recorder,
             compactor=ContextCompactor(
-                llm_client=client,
                 policy=context_policy if context_policy is not None else ContextPolicy(),
             ),
         )
