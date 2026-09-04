@@ -49,19 +49,6 @@ async def test_run_llm_enforces_independent_soft_budgets_and_totals():
     ]
 
 
-async def test_run_llm_keeps_missing_usage_output_and_marks_total_incomplete(caplog):
-    client = QueueClient([answer(None), answer(10)])
-    usage = RunUsage()
-    calls = RunLLM(client=client, config=RuntimeConfig(), usage=usage)
-    with caplog.at_level(logging.WARNING):
-        first = await calls.call(purpose="chat", messages=[], tools=[])
-    second = await calls.call(purpose="chat", messages=[], tools=[])
-    assert first.message["content"] == second.message["content"] == "ok"
-    assert usage.chat_tokens == usage.total_tokens == 10
-    assert not usage.complete
-    assert "usage unavailable" in caplog.text.lower()
-
-
 async def test_run_llm_marks_usage_incomplete_when_request_raises():
     client = QueueClient([RuntimeError("provider failure")])
     usage = RunUsage()

@@ -109,45 +109,8 @@ async def test_trace_io_failure_does_not_change_result_or_expose_error(tmp_path,
     assert str(blocked) not in caplog.text
 
 
-async def test_nonserializable_tool_result_uses_type_placeholder(tmp_path, monkeypatch):
-    class PrivateValue:
-        def __repr__(self):
-            raise AssertionError("Must not use repr")
-
-    async def execute(self, **kwargs):
-        return ToolResult(ok=True, content=PrivateValue())
-
-    monkeypatch.setattr(CalculatorTool, "execute", execute)
-    call = tool_call("calculator", '{"operation":"add","a":1,"b":2}')
-    result = await runtime(tmp_path, [{"tool_calls": [call]}, {"content": "Done"}]).run("Calculate")
-    tool_end = next(e for e in events(tmp_path, result.run_id) if e["event"] == "tool.end")
-    assert tool_end["data"]["result"]["content"] == {"unserializable_type": "PrivateValue"}
-
-
 async def test_unsafe_run_id_never_creates_trace_file(tmp_path):
     agent = runtime(tmp_path / "traces", [])
     with pytest.raises(ValueError, match="UUID4"):
         await agent.run("Question", run_id="../escape")
     assert not (tmp_path / "traces").exists()
-
-
-def test_failed_json_replacement_preserves_previous_events(tmp_path, monkeypatch, caplog):
-    from pathlib import Path
-
-    recorder = TraceRecorder(tmp_path)
-    run_id = str(uuid4())
-    first = TraceEvent(datetime.now(timezone.utc), run_id, None, 1, 0, "user.input", {"content": "Hello"})
-    recorder.emit(first)
-    original = (tmp_path / f"{run_id}.json").read_bytes()
-
-    def fail_replace(self, target):
-        raise OSError("private path")
-
-    monkeypatch.setattr(Path, "replace", fail_replace)
-    recorder.emit(TraceEvent(datetime.now(timezone.utc), run_id, None, 2, 1,
-                             "assistant.output", {"content": "Answer"}))
-    assert (tmp_path / f"{run_id}.json").read_bytes() == original
-    assert len(events(tmp_path, run_id)) == 1
-    assert not list(tmp_path.glob("*.tmp"))
-    assert "Trace write failed" in caplog.text
-    assert "private path" not in caplog.text

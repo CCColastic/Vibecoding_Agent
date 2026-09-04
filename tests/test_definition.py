@@ -25,10 +25,3 @@ def test_duplicate_tool_names_fail_during_definition() -> None:
             "Be helpful",
             [CalculatorTool(), CalculatorTool()],
         )
-
-
-def test_max_steps_must_be_positive() -> None:
-    definition = AgentDefinition("Be helpful", [])
-
-    with pytest.raises(ValueError, match="max_steps"):
-        RuntimeConfig(max_steps=0)

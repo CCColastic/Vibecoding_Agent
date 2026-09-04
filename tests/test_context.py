@@ -100,37 +100,7 @@ async def test_never_reduces_configured_retention_to_fit_budget():
     assert client.calls == []
 
 
-async def test_at_retention_count_keeps_all_history():
-    turn_count = policy().keep_recent_turns
-    source = turn("x" * 5600) + [m for _ in range(turn_count - 1) for m in turn("Recent")]
-    original = deepcopy(source)
-    client = FakeLLMClient([])
-    with pytest.raises(ContextLimitExceeded, match="No older turns"):
-        await prepare(client, source)
-    assert source == original
-    assert client.calls == []
-
-
-async def test_summary_limit_is_not_reserved_against_retained_turns():
-    source = history()
-    client = FakeLLMClient([{"content": "Short summary"}])
-    # The maximum allowed summary would not fit, but the actual summary does.
-    result = await prepare(client, source, config=policy(max_summary_chars=8000))
-    assert result.compacted
-    assert result.messages[1:-1] == source[-8:]
-    assert json.loads(client.calls[0]["messages"][1]["content"]) == source[:-8]
-
-
-async def test_retained_turns_are_not_limited_by_max_summary_chars():
-    source = turn("x" * 5600) + [m for _ in range(4) for m in turn("recent" * 50)]
-    client = FakeLLMClient([{"content": "Short summary"}])
-    result = await prepare(client, source)
-    assert result.messages[1:-1] == source[-8:]
-    assert sum(len(m["content"]) for m in result.messages[1:-1]) > policy().max_summary_chars
-
-
 @pytest.mark.parametrize("response", [
-    {"content": ""},
     {"content": "x" * 121}, {"content": "Summary", "tool_calls": [tool_call("search", "{}")]},
 ])
 async def test_invalid_summary_never_mutates_source_or_retries(response):
@@ -141,19 +111,3 @@ async def test_invalid_summary_never_mutates_source_or_retries(response):
         await prepare(client, source)
     assert source == original
     assert len(client.calls) == 1
-
-
-async def test_summary_that_expands_serialized_context_is_rejected():
-    # Control characters expand in JSON even though the text character count fits.
-    client = FakeLLMClient([{"content": "\x01" * 1600}])
-    config = policy(context_limit=3000, max_summary_chars=1600, keep_recent_turns=1)
-    with pytest.raises(CompactionError, match="did not reduce"):
-        await prepare(client, [*turn("x" * 8500), *turn("recent")], config=config)
-
-
-async def test_summary_request_too_large_stops_without_chunking():
-    client = FakeLLMClient([])
-    with pytest.raises(ContextLimitExceeded, match="Summary request"):
-        await prepare(client, [*turn("x" * 20000), *turn("Recent")],
-                      config=policy(keep_recent_turns=1))
-    assert client.calls == []

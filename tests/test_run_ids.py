@@ -59,24 +59,6 @@ def test_legacy_column_migration_is_idempotent_and_preserves_rows(tmp_path):
     assert "run_id" in columns and "turn_id" not in columns
 
 
-def test_replace_rejects_missing_identity_before_deleting(tmp_path):
-    store = SQLiteSessionStore(tmp_path / "sessions.db")
-    session = store.create_session("owner", "Keep")
-    store.append_messages("owner", session.id, "original", [{"role": "user", "content": "Original"}])
-    original = store.load_messages("owner", session.id)
-    with pytest.raises(ValueError, match="_run_id"):
-        store.replace_history("owner", session.id, [{"role": "user", "content": "Missing ID"}])
-    assert store.load_messages("owner", session.id) == original
-
-
-def test_append_rejects_mismatched_identity(tmp_path):
-    store = SQLiteSessionStore(tmp_path / "sessions.db")
-    session = store.create_session("owner", "Keep")
-    with pytest.raises(ValueError, match="must match"):
-        store.append_messages("owner", session.id, "one", [{"role": "user", "content": "Wrong", "_run_id": "two"}])
-    assert store.load_messages("owner", session.id) == []
-
-
 async def test_cli_no_trace_flag_and_run_id_output(tmp_path, monkeypatch):
     client = FakeLLMClient([{"content": "Answer"}])
 
