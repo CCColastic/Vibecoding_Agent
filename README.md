@@ -1,7 +1,7 @@
 # mini_agent
 
-从零实现的最小 ReAct 风格 Agent，使用 DeepSeek Chat Completions 接口，
-支持工具调用、连续追问、独立 Session 和滚动摘要。
+从零实现的最小 ReAct 风格 Agent，使用真实 DeepSeek Chat Completions 接口，
+支持工具调用、连续追问、独立 Session 和滚动摘要。核心流程不依赖 Agent 框架，
 工具 Schema 使用 Pydantic，持久化使用 SQLite。
 
 ## 1. 运行方式
